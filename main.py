@@ -1,14 +1,6 @@
-from snake_egg import EGraph, Rewrite, Var, vars
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.data import Data
-import numpy as np
-import unittest
+from rejoice import EGraph, Rewrite, Var, vars
 import json
 from collections import namedtuple
-from itertools import combinations, groupby
-from enum import Enum
 from egraph_encoder import EGraphEncoder
 
 add = namedtuple("Add", "x y")
@@ -42,11 +34,17 @@ def simplify(expr, iters=7):
 
 
 def main():
-    f = open("exgraph.json")
-    egraph = json.load(f)
-    encoder = EGraphEncoder(egraph)
-    data = encoder.encode_egraph()
-    print(data)
+    egraph = EGraph()
+    expr = add(0, add(0, 1))
+    egraph.add(expr)
+    print(egraph.classes())
+    egraph.run(rules, 7)
+    print(egraph.classes())
+    # f = open("exgraph.json")
+    # egraph = json.load(f)
+    # encoder = EGraphEncoder(egraph)
+    # data = encoder.encode_egraph()
+    # print(data)
 
 
 if __name__ == "__main__":

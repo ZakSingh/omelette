@@ -114,6 +114,9 @@ name = "hashbrown"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab5ef0d4909ef3724cc8cce6ccc8572c5c817592e9285f5464f8e86f8bd3726e"
+dependencies = [
+ "ahash",
+]
 
 [[package]]
 name = "hashbrown"
@@ -254,6 +257,7 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
+ "serde",
  "unindent",
 ]
 
@@ -341,10 +345,13 @@ version = "0.1.0"
 dependencies = [
  "egg",
  "env_logger",
+ "hashbrown 0.11.2",
  "log",
+ "once_cell",
  "pyo3",
  "serde",
  "serde_json",
+ "symbol_table",
 ]
 
 [[package]]
