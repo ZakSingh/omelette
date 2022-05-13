@@ -1,0 +1,164 @@
+{
+  "analysis": null,
+  "explain": null,
+  "unionfind": {
+    "parents": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 10, 7, 11, 8, 17, 9]
+  },
+  "memo": [
+    [{ "op": "3", "children": [] }, 2],
+    [{ "op": "+", "children": [9, 2] }, 13],
+    [{ "op": "+", "children": [6, 5] }, 14],
+    [{ "op": "4", "children": [] }, 3],
+    [{ "op": "+", "children": [8, 3] }, 18],
+    [{ "op": "5", "children": [] }, 4],
+    [{ "op": "+", "children": [7, 4] }, 16],
+    [{ "op": "+", "children": [0, 11] }, 12],
+    [{ "op": "+", "children": [5, 6] }, 7],
+    [{ "op": "+", "children": [10, 1] }, 15],
+    [{ "op": "+", "children": [1, 10] }, 11],
+    [{ "op": "7", "children": [] }, 6],
+    [{ "op": "2", "children": [] }, 1],
+    [{ "op": "+", "children": [4, 7] }, 8],
+    [{ "op": "+", "children": [2, 9] }, 10],
+    [{ "op": "+", "children": [3, 8] }, 9],
+    [{ "op": "+", "children": [11, 0] }, 17],
+    [{ "op": "6", "children": [] }, 5],
+    [{ "op": "1", "children": [] }, 0]
+  ],
+  "pending": [],
+  "analysis_pending": [],
+  "classes": {
+    "0": {
+      "id": 0,
+      "nodes": [{ "op": "1", "children": [] }],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [0, 11] }, 12],
+        [{ "op": "+", "children": [11, 0] }, 17]
+      ]
+    },
+    "10": {
+      "id": 10,
+      "nodes": [
+        { "op": "+", "children": [2, 9] },
+        { "op": "+", "children": [9, 2] }
+      ],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [1, 10] }, 11],
+        [{ "op": "+", "children": [10, 1] }, 15]
+      ]
+    },
+    "7": {
+      "id": 7,
+      "nodes": [
+        { "op": "+", "children": [5, 6] },
+        { "op": "+", "children": [6, 5] }
+      ],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [4, 7] }, 8],
+        [{ "op": "+", "children": [7, 4] }, 16]
+      ]
+    },
+    "4": {
+      "id": 4,
+      "nodes": [{ "op": "5", "children": [] }],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [4, 7] }, 8],
+        [{ "op": "+", "children": [7, 4] }, 16]
+      ]
+    },
+    "1": {
+      "id": 1,
+      "nodes": [{ "op": "2", "children": [] }],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [1, 10] }, 11],
+        [{ "op": "+", "children": [10, 1] }, 15]
+      ]
+    },
+    "17": {
+      "id": 17,
+      "nodes": [
+        { "op": "+", "children": [0, 11] },
+        { "op": "+", "children": [11, 0] }
+      ],
+      "data": null,
+      "parents": []
+    },
+    "11": {
+      "id": 11,
+      "nodes": [
+        { "op": "+", "children": [1, 10] },
+        { "op": "+", "children": [10, 1] }
+      ],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [0, 11] }, 12],
+        [{ "op": "+", "children": [11, 0] }, 17]
+      ]
+    },
+    "8": {
+      "id": 8,
+      "nodes": [
+        { "op": "+", "children": [4, 7] },
+        { "op": "+", "children": [7, 4] }
+      ],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [3, 8] }, 9],
+        [{ "op": "+", "children": [8, 3] }, 18]
+      ]
+    },
+    "5": {
+      "id": 5,
+      "nodes": [{ "op": "6", "children": [] }],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [5, 6] }, 7],
+        [{ "op": "+", "children": [6, 5] }, 14]
+      ]
+    },
+    "2": {
+      "id": 2,
+      "nodes": [{ "op": "3", "children": [] }],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [2, 9] }, 10],
+        [{ "op": "+", "children": [9, 2] }, 13]
+      ]
+    },
+    "9": {
+      "id": 9,
+      "nodes": [
+        { "op": "+", "children": [3, 8] },
+        { "op": "+", "children": [8, 3] }
+      ],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [2, 9] }, 10],
+        [{ "op": "+", "children": [9, 2] }, 13]
+      ]
+    },
+    "6": {
+      "id": 6,
+      "nodes": [{ "op": "7", "children": [] }],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [5, 6] }, 7],
+        [{ "op": "+", "children": [6, 5] }, 14]
+      ]
+    },
+    "3": {
+      "id": 3,
+      "nodes": [{ "op": "4", "children": [] }],
+      "data": null,
+      "parents": [
+        [{ "op": "+", "children": [3, 8] }, 9],
+        [{ "op": "+", "children": [8, 3] }, 18]
+      ]
+    }
+  }
+}
