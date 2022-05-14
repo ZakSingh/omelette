@@ -267,13 +267,14 @@ impl egg::Analysis<PyLang> for PyAnalysis {
         let py = unsafe { Python::assume_gil_acquired() };
 
         // collect the children if they are not `None` in python
-        let mut children = Vec::with_capacity(enode.len());
+        let mut children: Vec<&PyAny> = Vec::with_capacity(enode.len());
         for &id in enode.children() {
             let any = egraph[id].data.as_ref()?.as_ref(py);
             if any.is_none() {
                 return None;
             } else {
-                children.push(any)
+                // FIXME: Is this needed? What does it do?
+                // children.push(any)
             }
         }
 
@@ -413,15 +414,17 @@ impl EGraph {
         let mut ids: Vec<egg::Id> = eg.classes().map(|c| c.id).collect();
         ids.sort();
 
-        let mut nodes_by_class: HashMap<String, Vec<PyObject>> = HashMap::new();
+        let mut nodes_by_class: HashMap<String, (Option<PyObject>, Vec<PyObject>)> = HashMap::new();
         // Collect all the nodes, grouped by class ID
         for id in ids {
+            let data = eg[id].data.clone();
             let mut class_nodes: Vec<PyObject> = vec![];
             for node in &eg[id].nodes {
                 class_nodes.push(node.to_object(py, |id| Id(id)));
             }
-            nodes_by_class.insert(id.to_string(), class_nodes);
+            nodes_by_class.insert(id.to_string(), (data, class_nodes));
         }
+
         nodes_by_class.to_object(py)
     }
 }

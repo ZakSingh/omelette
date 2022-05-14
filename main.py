@@ -1,50 +1,41 @@
-from rejoice import EGraph, Rewrite, Var, vars
-import json
-from collections import namedtuple
-from egraph_encoder import EGraphEncoder
-
-add = namedtuple("Add", "x y")
-mul = namedtuple("Mul", "x y")
-
-# Rewrite rules
-a, b = vars("a b")
-list_rules = [
-    ["commute-add", add(a, b), add(b, a)],
-    ["commute-mul", mul(a, b), mul(b, a)],
-    ["add-0", add(a, 0), a],
-    ["mul-0", mul(a, 0), 0],
-    ["mul-1", mul(a, 1), a],
-]
-
-# Turn the lists into rewrites
-rules = list()
-for l in list_rules:
-    name = l[0]
-    frm = l[1]
-    to = l[2]
-    rules.append(Rewrite(frm, to, name))
-
-
-def simplify(expr, iters=7):
-    egraph = EGraph()
-    egraph.add(expr)
-    egraph.run(rules, iters)
-    best = egraph.extract(expr)
-    return best
+from MathLang import MathLang
+from rejoice import EGraph
+import networkx as nx
+import matplotlib
+import torch_geometric as geom
+import matplotlib.pyplot as plt
 
 
 def main():
-    egraph = EGraph()
-    expr = add(0, add(0, 1))
+    lang = MathLang()
+
+    ops = lang.all_operators_obj()
+    expr = ops.add(ops.add(0, 1), 1)
+    egraph = EGraph(lang.eclass_analysis)
     egraph.add(expr)
-    print(egraph.classes())
-    egraph.run(rules, 7)
-    print(egraph.classes())
-    # f = open("exgraph.json")
-    # egraph = json.load(f)
-    # encoder = EGraphEncoder(egraph)
-    # data = encoder.encode_egraph()
-    # print(data)
+    egraph.rebuild()
+
+    x, edge_index = lang.encode_egraph(egraph)
+    data = geom.data.Data(x=x, edge_index=edge_index)
+    g = geom.utils.to_networkx(data, node_attrs=['x'])
+
+    for u, data in g.nodes(data=True):
+        decoded = lang.decode_node(data["x"])
+        if decoded["type"] == "eclass":
+            data['name'] = "eclass"
+        elif decoded["is_scalar"]:
+            data['name'] = decoded["value"]
+        else:
+            data["name"] = decoded["op"]
+        del data['x']
+
+    node_labels = {}
+    for u, data in g.nodes(data=True):
+        node_labels[u] = data['name']
+
+    pos = nx.nx_agraph.graphviz_layout(g, prog="dot")
+    nx.draw(g, labels=node_labels, pos=pos)
+    plt.show()
 
 
 if __name__ == "__main__":

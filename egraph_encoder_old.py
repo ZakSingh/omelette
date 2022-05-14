@@ -4,7 +4,6 @@ import json
 from itertools import combinations, groupby
 from enum import Enum
 
-
 class EGraphEncoder:
     """This class handles conversion of egg's egraph data structure into a PyTorch Geometric Data object."""
 
