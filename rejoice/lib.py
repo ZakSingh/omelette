@@ -1,6 +1,9 @@
 from .rejoice import *
 from typing import Protocol, Union, NamedTuple
 import torch
+import torch_geometric as geom
+import networkx as nx
+import matplotlib.pyplot as plt
 
 
 class ObjectView(object):
@@ -68,9 +71,8 @@ class Language(Protocol):
         onehot[0] = 1
         return onehot
 
-    def encode_egraph(self, egraph: EGraph) -> tuple[torch.Tensor, torch.Tensor]:
+    def encode_egraph(self, egraph: EGraph) -> geom.data.Data:
         classes = egraph.classes()
-        print(classes)
         all_nodes = []
         all_edges = []
         eclass_to_ind = {}
@@ -82,7 +84,6 @@ class Language(Protocol):
 
         for eclass_id, (data, nodes) in classes.items():
             for node in nodes:
-                print("node", node)
                 all_nodes.append(self.encode_node(node))
 
                 # connect each node to its eclass
@@ -96,4 +97,27 @@ class Language(Protocol):
         x = torch.stack(all_nodes, dim=0)
         edge_index = torch.stack(all_edges, dim=0).T.long()
 
-        return x, edge_index
+        return geom.data.Data(x=x, edge_index=edge_index)
+
+    def viz_egraph(self, data):
+        """Vizualize a PyTorch Geometric data object containing an egraph."""
+        g = geom.utils.to_networkx(data, node_attrs=['x'])
+
+        for u, data in g.nodes(data=True):
+            decoded = self.decode_node(data["x"])
+            if decoded["type"] == "eclass":
+                data['name'] = "eclass"
+            elif decoded["is_scalar"]:
+                data['name'] = decoded["value"]
+            else:
+                data["name"] = decoded["op"]
+            del data['x']
+
+        node_labels = {}
+        for u, data in g.nodes(data=True):
+            node_labels[u] = data['name']
+
+        pos = nx.nx_agraph.graphviz_layout(g, prog="dot")
+        nx.draw(g, labels=node_labels, pos=pos)
+        plt.show()
+        return g

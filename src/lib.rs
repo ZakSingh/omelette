@@ -397,14 +397,21 @@ impl EGraph {
         Ok(())
     }
 
+    // fn run_one(&mut self, rewrite: &PyObject) -> PyResult<()> {
+    //
+    //     let rw = rewrite.extract()?;
+    //
+    // }
+
     #[args(exprs = "*")]
-    fn extract(&mut self, py: Python, exprs: &PyTuple) -> SingletonOrTuple<PyObject> {
+    fn extract(&mut self, py: Python, exprs: &PyTuple) -> SingletonOrTuple<(usize,PyObject)> {
         let ids: Vec<egg::Id> = exprs.iter().map(|expr| self.add(expr).0).collect();
         let extractor = egg::Extractor::new(&self.egraph, egg::AstSize);
+
         ids.iter()
             .map(|&id| {
-                let (_cost, recexpr) = extractor.find_best(id);
-                reconstruct(py, &recexpr)
+                let (cost, recexpr) = extractor.find_best(id);
+                (cost, reconstruct(py, &recexpr))
             })
             .collect()
     }
@@ -427,6 +434,10 @@ impl EGraph {
 
         nodes_by_class.to_object(py)
     }
+
+    // fn __getstate__(&mut self, py: Python) -> PyObject {
+    //     self.classes(py)
+    // }
 }
 
 fn reconstruct(py: Python, recexpr: &RecExpr<PyLang>) -> PyObject {

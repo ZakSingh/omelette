@@ -1,5 +1,6 @@
 import functools
 from rejoice.lib import Language
+from rejoice import vars
 
 
 class MathLang(Language):
