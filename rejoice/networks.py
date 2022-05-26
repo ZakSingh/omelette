@@ -23,14 +23,43 @@ def create_mlp(input_shape: Tuple[int], n_actions: int, hidden_sizes: list = [12
 class GATPolicyNetwork(nn.Module):
     """A Graph Attentional Network (GAT) which serves as a Policy Network for our RL agent."""
 
-    def __init__(self, num_node_features: int, n_actions: int, dp_rate_linear=0.5, hidden_size: int = 128):
+    def __init__(self, num_node_features: int, n_actions: int, dp_rate_linear=0.2, hidden_size: int = 128):
         super(GATPolicyNetwork, self).__init__()
-        self.gnn = geom.nn.GAT(in_channels=num_node_features, hidden_channels=hidden_size, out_channels=hidden_size, num_layers=2)
+        self.gnn = geom.nn.GAT(in_channels=num_node_features, hidden_channels=hidden_size, out_channels=hidden_size, num_layers=3)
         self.head = nn.Sequential(nn.Dropout(dp_rate_linear), nn.Linear(hidden_size, n_actions))
 
-    def forward(self, data: geom.data.Data):
-        x = self.gnn(data.x, data.edge_index, data.batch)
-        x = geom.nn.global_mean_pool(x, data.batch)
+    def forward(self, data: Union[geom.data.Data, geom.data.Batch]):
+        x = self.gnn(x=data.x, edge_index=data.edge_index)
+        x = geom.nn.global_mean_pool(x=x, batch=data.batch)
+        x = self.head(x)
+        return x
+
+
+class GCNPolicyNetwork(nn.Module):
+
+    def __init__(self, num_node_features: int, n_actions: int, dp_rate_linear=0.2, hidden_size: int = 128):
+        super(GCNPolicyNetwork, self).__init__()
+        self.gnn = geom.nn.GCN(in_channels=num_node_features, hidden_channels=hidden_size, out_channels=hidden_size, num_layers=2)
+        self.head = nn.Sequential(nn.Dropout(dp_rate_linear), nn.Linear(hidden_size, n_actions))
+
+    def forward(self, data: Union[geom.data.Data, geom.data.Batch]):
+        # print("forward", data)
+        x = self.gnn(x=data.x, edge_index=data.edge_index)
+        x = geom.nn.global_mean_pool(x=x, batch=data.batch)
+        x = self.head(x)
+        return x
+
+
+class SAGEPolicyNetwork(nn.Module):
+
+    def __init__(self, num_node_features: int, n_actions: int, dp_rate_linear=0.2, hidden_size: int = 128, out_std: float = 0.01):
+        super(SAGEPolicyNetwork, self).__init__()
+        self.gnn = geom.nn.GraphSAGE(in_channels=num_node_features, hidden_channels=hidden_size, out_channels=hidden_size, num_layers=4)
+        self.head = nn.Sequential(nn.Linear(hidden_size, n_actions))
+
+    def forward(self, data: Union[geom.data.Data, geom.data.Batch]):
+        x = self.gnn(x=data.x, edge_index=data.edge_index)
+        x = geom.nn.global_mean_pool(x=x, batch=data.batch)
         x = self.head(x)
         return x
 
@@ -51,7 +80,7 @@ class ActorCategorical(nn.Module):
 
         self.actor_net = actor_net
 
-    def forward(self, states: geom.data.Data):
+    def forward(self, states: Union[geom.data.Data, geom.data.Batch]):
         logits = self.actor_net(states)
         pi = Categorical(logits=logits)
         actions = pi.sample()

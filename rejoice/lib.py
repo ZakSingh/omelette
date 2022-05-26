@@ -1,10 +1,11 @@
 from .rejoice import *
 from typing import Protocol, Union, NamedTuple
+from collections import OrderedDict
 import torch
 import torch_geometric as geom
 import networkx as nx
 import matplotlib.pyplot as plt
-
+import numpy as np
 
 class ObjectView(object):
     def __init__(self, d):
@@ -12,10 +13,14 @@ class ObjectView(object):
 
 
 class Language(Protocol):
+    """A base Language for an equality saturation task. This will be passed to egg."""
 
     def op_tuple(self, op):
+        """Convert an operator string (name, x, y, ...) into a named tuple"""
         name, *args = op
-        return NamedTuple(name, [(a, int) for a in args])
+        tup = NamedTuple(name, [(a, int) for a in args])
+        globals()[name] = tup
+        return tup
 
     def eclass_analysis(self, *args) -> any:
         ...
@@ -39,35 +44,44 @@ class Language(Protocol):
             rules.append(Rewrite(frm, to, name))
         return rules
 
+    @property
     def num_node_features(self) -> int:
-        return 3 + len(self.all_operators())
+        return 4 + len(self.all_operators())
+
+    def get_feature_upper_bounds(self):
+        return np.array([1, 1, 1, np.inf] + ([1] * len(self.all_operators())))
 
     def encode_node(self, operator: Union[int, tuple]) -> torch.Tensor:
-        onehot = torch.zeros(self.num_node_features())
+        """[is_eclass, is_enode, is_scalar, scalar_val, ...onehot_optype]"""
+        onehot = torch.zeros(self.num_node_features)
 
         if isinstance(operator, int):
-            onehot[1] = 1
-            onehot[2] = operator
+            onehot[2] = 1
+            onehot[3] = operator
             return onehot
+
+        # is an enode
+        onehot[1] = 1
 
         for ind, op in enumerate(self.all_operators()):
             if isinstance(operator, op):
-                onehot[3 + ind] = 1
+                onehot[4 + ind] = 1
                 return onehot
 
         raise Exception("Failed to encode node")
 
     def decode_node(self, node: torch.Tensor):
-        dnode = {"type": "eclass" if node[0] == 1 else "enode", "is_scalar": bool(node[1]), "value": node[2]}
-        if node[0] == 0 and node[1] == 0:
+        dnode = {"type": "eclass" if node[0] == 1 else "enode", "is_scalar": bool(node[2]), "value": node[3]}
+        # if it's an enode, find its op type
+        if node[1] == 1:
             all_ops = self.all_operators()
-            ind = torch.argmax(torch.Tensor(node[3:])).item()
+            ind = torch.argmax(torch.Tensor(node[4:])).item()
             op = all_ops[ind]
             dnode["op"] = op.__name__
         return dnode
 
     def encode_eclass(self, eclass_id: int, data: any) -> torch.Tensor:
-        onehot = torch.zeros(self.num_node_features())
+        onehot = torch.zeros(self.num_node_features)
         onehot[0] = 1
         return onehot
 
@@ -96,8 +110,9 @@ class Language(Protocol):
 
         x = torch.stack(all_nodes, dim=0)
         edge_index = torch.stack(all_edges, dim=0).T.long()
-
-        return geom.data.Data(x=x, edge_index=edge_index)
+        edge_index, _ = geom.utils.add_remaining_self_loops(edge_index)
+        data = geom.data.Data(x=x, edge_index=edge_index)
+        return data
 
     def viz_egraph(self, data):
         """Vizualize a PyTorch Geometric data object containing an egraph."""

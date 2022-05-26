@@ -1,12 +1,12 @@
 use egg::*;
-// use egg::{Language, RecExpr};
 use once_cell::sync::Lazy;
 
+use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::{borrow::Cow, fmt::Display, hash::Hash, time::Duration};
-use std::borrow::Borrow;
-use std::collections::HashMap;
+use log::{debug, error, log_enabled, info, Level};
 
 use pyo3::AsPyPointer;
 use pyo3::{
@@ -14,9 +14,7 @@ use pyo3::{
     prelude::*,
     types::{PyList, PyString, PyTuple, PyType},
 };
-use pyo3::types::{IntoPyDict, PyDict};
 
-use serde::{Serialize, Deserialize, Serializer, ser};
 
 fn py_eq(a: &PyAny, b: impl ToPyObject) -> bool {
     a.rich_compare(b, CompareOp::Eq)
@@ -210,7 +208,6 @@ impl Pattern {
     }
 }
 
-
 fn build_pattern(ast: &mut egg::PatternAst<PyLang>, tree: &PyAny) -> egg::Id {
     if let Ok(id) = tree.extract::<Id>() {
         panic!("Ids are unsupported in patterns: {}", id.0)
@@ -244,7 +241,8 @@ impl Rewrite {
             name = Cow::Owned(format!("{} => {}", searcher, applier));
         }
         let name_str: &str = name.borrow();
-        let rewrite = egg::Rewrite::new(name_str, searcher, applier).expect("Failed to create rewrite");
+        let rewrite =
+            egg::Rewrite::new(name_str, searcher, applier).expect("Failed to create rewrite");
         Rewrite { rewrite }
     }
 
@@ -267,7 +265,7 @@ impl egg::Analysis<PyLang> for PyAnalysis {
         let py = unsafe { Python::assume_gil_acquired() };
 
         // collect the children if they are not `None` in python
-        let mut children: Vec<&PyAny> = Vec::with_capacity(enode.len());
+        let children: Vec<&PyAny> = Vec::with_capacity(enode.len());
         for &id in enode.children() {
             let any = egraph[id].data.as_ref()?.as_ref(py);
             if any.is_none() {
@@ -368,43 +366,46 @@ impl EGraph {
         self.egraph.rebuild()
     }
 
-    #[args(
-        iter_limit = "10",
-        time_limit = "10.0",
-        node_limit = "100_000",
-    )]
+    fn graphviz(&mut self, path: &str) {
+        self.egraph.dot().to_png(path).unwrap()
+    }
+
+    #[args(iter_limit = "10", time_limit = "10.0", node_limit = "100_000")]
     fn run(
         &mut self,
         rewrites: &PyList,
         iter_limit: usize,
         time_limit: f64,
         node_limit: usize,
-    ) -> PyResult<()> {
+    ) -> PyResult<&str> {
         let refs = rewrites
             .iter()
             .map(FromPyObject::extract)
             .collect::<PyResult<Vec<PyRef<Rewrite>>>>()?;
         let egraph = std::mem::take(&mut self.egraph);
         let scheduled_runner = Runner::default();
+
         let runner = scheduled_runner
             .with_iter_limit(iter_limit)
             .with_node_limit(node_limit)
             .with_time_limit(Duration::from_secs_f64(time_limit))
             .with_egraph(egraph)
+            .with_scheduler(SimpleScheduler)
             .run(refs.iter().map(|r| &r.rewrite));
 
         self.egraph = runner.egraph;
-        Ok(())
+
+        match runner.stop_reason.unwrap() {
+            StopReason::IterationLimit(_) => Ok("ITERATION_LIMIT"),
+            StopReason::NodeLimit(_) => Ok("NODE_LIMIT"),
+            StopReason::Saturated => Ok("SATURATED"),
+            StopReason::TimeLimit(_) => Ok("TIME_LIMIT"),
+            StopReason::Other(_) => Ok("OTHER")
+        }
     }
 
-    // fn run_one(&mut self, rewrite: &PyObject) -> PyResult<()> {
-    //
-    //     let rw = rewrite.extract()?;
-    //
-    // }
-
     #[args(exprs = "*")]
-    fn extract(&mut self, py: Python, exprs: &PyTuple) -> SingletonOrTuple<(usize,PyObject)> {
+    fn extract(&mut self, py: Python, exprs: &PyTuple) -> SingletonOrTuple<(usize, PyObject)> {
         let ids: Vec<egg::Id> = exprs.iter().map(|expr| self.add(expr).0).collect();
         let extractor = egg::Extractor::new(&self.egraph, egg::AstSize);
 
@@ -434,10 +435,6 @@ impl EGraph {
 
         nodes_by_class.to_object(py)
     }
-
-    // fn __getstate__(&mut self, py: Python) -> PyObject {
-    //     self.classes(py)
-    // }
 }
 
 fn reconstruct(py: Python, recexpr: &RecExpr<PyLang>) -> PyObject {
@@ -488,6 +485,9 @@ impl<T: IntoPy<PyObject>> FromIterator<T> for SingletonOrTuple<T> {
 /// import the module.
 #[pymodule]
 fn rejoice(_py: Python, m: &PyModule) -> PyResult<()> {
+    // env_logger::init();
+    // pyo3_log::init();
+
     m.add_class::<EGraph>()?;
     m.add_class::<Id>()?;
     m.add_class::<Var>()?;

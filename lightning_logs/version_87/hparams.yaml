@@ -1,0 +1,21 @@
+batch_size: 32
+clip_ratio: 0.2
+env: egraph-v0
+expr: !!python/object/new:rejoice.lib.Add
+- !!python/object/new:rejoice.lib.Add
+  - !!python/object/new:rejoice.lib.Mul
+    - 16
+    - 2
+  - !!python/object/new:rejoice.lib.Mul
+    - 4
+    - 0
+- 3
+gamma: 0.99
+lam: 0.95
+lang: !!python/object:MathLang.MathLang {}
+lr_actor: 0.0003
+lr_critic: 0.001
+max_episode_len: 100
+nb_optim_iters: 4
+network_type: SAGE
+steps_per_epoch: 100

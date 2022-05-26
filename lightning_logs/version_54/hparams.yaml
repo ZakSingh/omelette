@@ -1,0 +1,22 @@
+batch_size: 128
+env: egraph
+episode_length: 10
+eps_end: 0.01
+eps_last_frame: 20
+eps_start: 1.0
+expr: !!python/object/new:rejoice.lib.Add
+- !!python/object/new:rejoice.lib.Add
+  - !!python/object/new:rejoice.lib.Mul
+    - 16
+    - 2
+  - !!python/object/new:rejoice.lib.Mul
+    - 4
+    - 0
+- 3
+gamma: 0.99
+lang: !!python/object:MathLang.MathLang {}
+lr: 0.01
+replay_size: 10000
+sync_rate: 5
+warm_start_size: 20
+warm_start_steps: 20

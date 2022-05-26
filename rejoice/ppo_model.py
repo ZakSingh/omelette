@@ -1,47 +1,35 @@
 from typing import List, Tuple
 
 import pytorch_lightning as pl
-from .networks import ActorCriticAgent, ActorCategorical, ActorContinous, GATPolicyNetwork
+from torch.optim import Adam
+
+from .networks import ActorCriticAgent, ActorCategorical, GATPolicyNetwork, GCNPolicyNetwork, SAGEPolicyNetwork
 from .data import ExperienceSourceDataset
 from .lib import Language, EGraph
 import torch
 from torch.utils.data import DataLoader
 import torch.optim as optim
-from torch.optim.optimizer import Optimizer
 import gym
 import torch_geometric as geom
 
 
 class PPO(pl.LightningModule):
-    """
-    PyTorch Lightning implementation of `PPO
-    <https://arxiv.org/abs/1707.06347>`_
-    Paper authors: John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, Oleg Klimov
-    Example:
-        model = PPO("CartPole-v0")
-    Train:
-        trainer = Trainer()
-        trainer.fit(model)
-    Note:
-        This example is based on:
-        https://github.com/openai/baselines/blob/master/baselines/ppo2/ppo2.py
-        https://github.com/PyTorchLightning/pytorch-lightning-bolts/blob/master/pl_bolts/models/rl/reinforce_model.py
-    """
+
     def __init__(
-        self,
-        env: str,
-        lang: Language,
-        egraph: EGraph,
-        expr: any,
-        gamma: float = 0.99,
-        lam: float = 0.95,
-        lr_actor: float = 3e-4,
-        lr_critic: float = 1e-3,
-        max_episode_len: float = 1000,
-        batch_size: int = 512,
-        steps_per_epoch: int = 2048,
-        nb_optim_iters: int = 4,
-        clip_ratio: float = 0.2,
+            self,
+            env: str,
+            lang: Language,
+            expr: any,
+            gamma: float = 0.99,
+            lam: float = 0.95,
+            lr_actor: float = 3e-4,
+            lr_critic: float = 1e-3,
+            max_episode_len: float = 10,
+            batch_size: int = 16,  # 256,
+            steps_per_epoch: int = 32,  # 512,
+            nb_optim_iters: int = 4,
+            clip_ratio: float = 0.2,
+            network_type="GCN"
     ) -> None:
 
         """
@@ -69,26 +57,26 @@ class PPO(pl.LightningModule):
         self.lam = lam
         self.max_episode_len = max_episode_len
         self.clip_ratio = clip_ratio
-        self.save_hyperparameters(ignore=["egraph"])
+        self.save_hyperparameters()
 
-        self.env = gym.make(env, lang=lang, egraph=egraph, expr=expr)
+        self.env = gym.make(env, lang=lang, expr=expr, step_lim=max_episode_len)
 
         # value network
-        # self.critic = create_mlp(self.env.observation_space.shape, 1)
-        self.critic = GATPolicyNetwork(num_node_features=self.env.num_node_features, n_actions=1)
-        # policy network (agent)
-        if isinstance(self.env.action_space, gym.spaces.box.Box):
-            act_dim = self.env.action_space.shape[0]
-            # actor_mlp = create_mlp(self.env.observation_space.shape, act_dim)
-            actor_network = GATPolicyNetwork(num_node_features=self.env.num_node_features, n_actions=act_dim)
-            self.actor = ActorContinous(actor_network, act_dim)
-        elif isinstance(self.env.action_space, gym.spaces.discrete.Discrete):
-            # actor_mlp = create_mlp(self.env.observation_space.shape, self.env.action_space.n)
-            actor_network = GATPolicyNetwork(num_node_features=self.env.num_node_features, n_actions=self.env.action_space.n)
+        if network_type == "GAT":
+            self.critic = GATPolicyNetwork(num_node_features=self.env.num_node_features, n_actions=1)
+            actor_network = GATPolicyNetwork(num_node_features=self.env.num_node_features,
+                                             n_actions=self.env.action_space.n)
             self.actor = ActorCategorical(actor_network)
-        else:
-            raise NotImplementedError('Env action space should be of type Box (continous) or Discrete (categorical)'
-                                      'Got type: ', type(self.env.action_space))
+        elif network_type == "GCN":
+            self.critic = GCNPolicyNetwork(num_node_features=self.env.num_node_features, n_actions=1)
+            actor_network = GCNPolicyNetwork(num_node_features=self.env.num_node_features,
+                                             n_actions=self.env.action_space.n)
+            self.actor = ActorCategorical(actor_network)
+        elif network_type == "SAGE":
+            self.critic = SAGEPolicyNetwork(num_node_features=self.env.num_node_features, n_actions=1)
+            actor_network = SAGEPolicyNetwork(num_node_features=self.env.num_node_features,
+                                              n_actions=self.env.action_space.n)
+            self.actor = ActorCategorical(actor_network)
 
         self.agent = ActorCriticAgent(self.actor, self.critic)
 
@@ -102,10 +90,10 @@ class PPO(pl.LightningModule):
         self.ep_values = []
         self.epoch_rewards = []
 
-        self.episode_step = 0
-        self.avg_ep_reward = 0
-        self.avg_ep_len = 0
-        self.avg_reward = 0
+        self.episode_step = 0.0
+        self.avg_ep_reward = 0.0
+        self.avg_ep_len = 0.0
+        self.avg_reward = 0.0
 
         self.state = self.env.reset()
 
@@ -186,7 +174,7 @@ class PPO(pl.LightningModule):
 
             if epoch_end or done or terminal:
                 # if trajectory ends abtruptly, boostrap value of next state
-                if (terminal or epoch_end) and not done:
+                if terminal or epoch_end:  # and not done:
                     with torch.no_grad():
                         _, _, _, value = self.agent(self.state, self.device)
                         last_value = value.item()
@@ -226,8 +214,9 @@ class PPO(pl.LightningModule):
 
                 # if epoch ended abruptly, exlude last cut-short episode to prevent stats skewness
                 epoch_rewards = self.epoch_rewards
-                if not done:
-                    epoch_rewards = epoch_rewards[:-1]
+                # if not done:
+                #     print("not done, removing last element of epoch_rewards")
+                #     epoch_rewards = epoch_rewards[:-1]
 
                 total_epoch_reward = sum(epoch_rewards)
                 nb_episodes = len(epoch_rewards)
@@ -263,25 +252,28 @@ class PPO(pl.LightningModule):
         state, action, old_logp, qval, adv = batch
 
         # normalize advantages
-        adv = (adv - adv.mean())/adv.std()
+        adv = (adv - adv.mean()) / adv.std()
 
-        self.log("avg_ep_len", self.avg_ep_len, prog_bar=True, on_step=False, on_epoch=True)
-        self.log("avg_ep_reward", self.avg_ep_reward, prog_bar=True, on_step=False, on_epoch=True)
-        self.log("avg_reward", self.avg_reward, prog_bar=True, on_step=False, on_epoch=True)
+        self.log("avg_ep_len", self.avg_ep_len, prog_bar=True, on_step=False, on_epoch=True, batch_size=self.batch_size)
+        self.log("avg_ep_reward", self.avg_ep_reward, prog_bar=True, on_step=False, on_epoch=True,
+                 batch_size=self.batch_size)
+        self.log("avg_reward", self.avg_reward, prog_bar=True, on_step=False, on_epoch=True, batch_size=self.batch_size)
 
         if optimizer_idx == 0:
             loss_actor = self.actor_loss(state, action, old_logp, qval, adv)
-            self.log('loss_actor', loss_actor, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+            self.log('loss_actor', loss_actor, on_step=False, on_epoch=True, prog_bar=True, logger=True,
+                     batch_size=self.batch_size)
 
             return loss_actor
 
         elif optimizer_idx == 1:
             loss_critic = self.critic_loss(state, action, old_logp, qval, adv)
-            self.log('loss_critic', loss_critic, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+            self.log('loss_critic', loss_critic, on_step=False, on_epoch=True, prog_bar=False, logger=True,
+                     batch_size=self.batch_size)
 
             return loss_critic
 
-    def configure_optimizers(self) -> List[Optimizer]:
+    def configure_optimizers(self) -> tuple[Adam, Adam]:
         """ Initialize Adam optimizer"""
         optimizer_actor = optim.Adam(self.actor.parameters(), lr=self.lr_actor)
         optimizer_critic = optim.Adam(self.critic.parameters(), lr=self.lr_critic)
@@ -299,7 +291,7 @@ class PPO(pl.LightningModule):
     def _dataloader(self) -> DataLoader:
         """Initialize the Replay Buffer dataset used for retrieving experiences"""
         dataset = ExperienceSourceDataset(self.train_batch)
-        dataloader = geom.loader.DataLoader(dataset=dataset, batch_size=self.batch_size, num_workers=12)
+        dataloader = geom.loader.DataLoader(dataset=dataset, batch_size=self.batch_size)
         return dataloader
 
     def train_dataloader(self) -> DataLoader:
