@@ -25,31 +25,36 @@ class EGraphEnv(gym.Env):
                                             low=0,
                                             high=lang.get_feature_upper_bounds())
         self.reward_range = (-1, 1)
-        self.egraph, self.max_cost = None, None
+        self.egraph, self.max_cost, self.prev_cost = None, None, None
 
     def step(self, action: any) -> Tuple[any, float, bool, dict]:
+        info = {"actual_cost": self.prev_cost}
         is_stop_action = action == len(self.rewrite_rules)
         if is_stop_action:
             # Agent has chosen to stop optimizing and terminate current episode
+            # punish agent if it ends the episode on the initial step (i.e. the first step)
+            reward = -1.0 if self.prev_cost == self.max_cost else 0.0
             # TODO: should the next obs be None or still the current state?
-            return self._get_obs(), 0.0, True, {}
+            return self._get_obs(), reward, True, info
 
         rewrite_to_apply = [self.rewrite_rules[action]]
         stop_reason = self.egraph.run(rewrite_to_apply, iter_limit=1)
+        info["stop_reason"] = stop_reason
 
         if stop_reason == 'SATURATED':
             # if it was saturated, applying the rule did nothing; no need to re-extract
-            reward = -0.2
+            reward = -0.1
         else:
             best_cost, best_expr = self.egraph.extract(self.expr)
             reward = (self.max_cost - float(best_cost)) / self.max_cost
+            self.prev_cost = best_cost
+            info["actual_cost"] = best_cost
             if stop_reason != "ITERATION_LIMIT":
-                reward -= 1  # punish for blowing up egraph or timing out
-
+                reward -= 1.0  # punish for blowing up egraph or timing out
         is_done = is_terminal(stop_reason)
         new_obs = self._get_obs()
 
-        return new_obs, reward, is_done, dict()
+        return new_obs, reward, is_done, info
 
     def reset(
             self,
@@ -61,6 +66,7 @@ class EGraphEnv(gym.Env):
         self.egraph = EGraph()
         self.egraph.add(self.expr)
         self.max_cost = float(self.egraph.extract(self.expr)[0])
+        self.prev_cost = self.max_cost
         # reward is normalized to (0, max_cost)
         new_obs = self._get_obs()
         return new_obs

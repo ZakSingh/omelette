@@ -1,8 +1,7 @@
 from gym import Space
 from gym.spaces import Box, Dict
-from gym.utils import seeding
 import numpy as np
-from typing import Optional, Union, SupportsFloat
+from typing import Union, SupportsFloat
 
 
 class GraphSpace(Space):

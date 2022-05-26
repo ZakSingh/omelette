@@ -12,7 +12,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
-
+from torch_geometric.nn import MemPooling
+import torch.nn.functional as F
 from MathLang import MathLang
 from rejoice import envs
 
@@ -39,9 +40,9 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="egraph-v0",
                         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=50_000,
+    parser.add_argument("--total-timesteps", type=int, default=100_000,
                         help="total timesteps of the experiments")
-    parser.add_argument("--learning-rate", type=float, default=2.5e-4,
+    parser.add_argument("--learning-rate", type=float, default=2.5e-5,
                         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=4,
                         help="the number of parallel game environments")
@@ -108,15 +109,23 @@ class SAGENetwork(nn.Module):
                  out_std: float = np.sqrt(2)):
         super(SAGENetwork, self).__init__()
         self.gnn = pyg.nn.GraphSAGE(in_channels=num_node_features, hidden_channels=hidden_size,
-                                    out_channels=hidden_size, num_layers=4, dropout=0.2, jk="lstm")
+                                    out_channels=hidden_size, num_layers=3, dropout=0.2)
 
-        self.head = nn.Sequential(# nn.Dropout(dp_rate_linear),
-                                  layer_init(nn.Linear(hidden_size, n_actions), std=out_std))
+        self.mem1 = MemPooling(hidden_size, 80, heads=5, num_clusters=10)
+        self.mem2 = MemPooling(80, n_actions, heads=5, num_clusters=1)
+
+        # self.head = layer_init(nn.Linear(hidden_size, n_actions), std=out_std)
 
     def forward(self, data: Union[pyg.data.Data, pyg.data.Batch]):
         x = self.gnn(x=data.x, edge_index=data.edge_index)
-        x = pyg.nn.global_add_pool(x=x, batch=data.batch)
-        x = self.head(x)
+        x = F.leaky_relu(x)
+        # x = pyg.nn.global_mean_pool(x=x, batch=data.batch)
+        # x = self.head(x)
+        x, S1 = self.mem1(x, data.batch)
+        x = F.leaky_relu(x)
+        x = F.dropout(x, p=0.2)
+        x, S2 = self.mem2(x)
+        x = x.squeeze(1)
         return x
 
 
@@ -148,7 +157,6 @@ if __name__ == "__main__":
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
         import wandb
-
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
@@ -230,9 +238,11 @@ if __name__ == "__main__":
 
             for item in info:
                 if "episode" in item.keys():
-                    print(f"global_step={global_step}, episodic_return={item['episode']['r']}")
                     writer.add_scalar("charts/episodic_return", item["episode"]["r"], global_step)
                     writer.add_scalar("charts/episodic_length", item["episode"]["l"], global_step)
+                    writer.add_scalar("charts/episodic_cost", item["actual_cost"], global_step)
+
+                    print(f"global_step={global_step}, episodic_return={item['episode']['r']}, episodic_cost={item['actual_cost']}")
                     break
 
         # bootstrap value if not done
