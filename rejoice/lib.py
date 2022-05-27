@@ -6,6 +6,8 @@ import torch_geometric as geom
 import networkx as nx
 import matplotlib.pyplot as plt
 import numpy as np
+import torch_geometric.transforms as T
+
 
 class ObjectView(object):
     def __init__(self, d):
@@ -70,6 +72,15 @@ class Language(Protocol):
 
         raise Exception("Failed to encode node")
 
+    def feature_names(self):
+        features = ["is_eclass",
+                    "is_enode",
+                    "is_scalar",
+                    "scalar_val"]
+
+        op_names = [op.__name__ for op in self.all_operators()]
+        return features + op_names
+
     def decode_node(self, node: torch.Tensor):
         dnode = {"type": "eclass" if node[0] == 1 else "enode", "is_scalar": bool(node[2]), "value": node[3]}
         # if it's an enode, find its op type
@@ -89,6 +100,7 @@ class Language(Protocol):
         classes = egraph.classes()
         all_nodes = []
         all_edges = []
+        edge_attr = []
         eclass_to_ind = {}
 
         # Insert eclasses first as enodes will refer to them
@@ -102,16 +114,19 @@ class Language(Protocol):
 
                 # connect each node to its eclass
                 all_edges.append(torch.Tensor([eclass_to_ind[eclass_id], len(all_nodes) - 1]))
+                edge_attr.append(torch.Tensor([0, 1]))
 
                 # connect each node to its child eclasses
                 if isinstance(node, tuple):
                     for ecid in node:
                         all_edges.append(torch.Tensor([len(all_nodes) - 1, eclass_to_ind[str(ecid)]]))
+                        edge_attr.append(torch.Tensor([1, 0]))
 
         x = torch.stack(all_nodes, dim=0)
         edge_index = torch.stack(all_edges, dim=0).T.long()
-        edge_index, _ = geom.utils.add_remaining_self_loops(edge_index)
-        data = geom.data.Data(x=x, edge_index=edge_index)
+        edge_attr = torch.stack(edge_attr, dim=0)
+        edge_index, edge_attr = geom.utils.add_remaining_self_loops(edge_index, edge_attr)
+        data = geom.data.Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
         return data
 
     def viz_egraph(self, data):
@@ -134,5 +149,5 @@ class Language(Protocol):
 
         pos = nx.nx_agraph.graphviz_layout(g, prog="dot")
         nx.draw(g, labels=node_labels, pos=pos)
-        plt.show()
+        plt.imshow()
         return g

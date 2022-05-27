@@ -13,7 +13,7 @@ class GraphSpace(Space):
                  high: Union[SupportsFloat, np.ndarray],
                  dtype=np.float32,
                  seed=None):
-        assert num_node_features > 0, "num_node_features have to be positive"
+        assert num_node_features > 0, "num_node_features have to be positive."
         assert dtype is not None, "dtype must be explicitly provided."
         self.dtype = np.dtype(dtype)
         self.num_node_features = num_node_features

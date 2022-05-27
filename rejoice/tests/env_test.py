@@ -90,6 +90,18 @@ class MyTestCase(unittest.TestCase):
         self.take_step(env, 4)
         self.take_step(env, 5)
 
+    def test_r(self):
+        self.run_egg()
+        env = gym.make('egraph-v0', lang=self.lang, expr=self.expr)
+        init_obs = env.reset()
+        print("Init_Obs", init_obs)
+        self.take_step(env, 3)
+        self.take_step(env, 0)
+        self.take_step(env, 2)
+        self.take_step(env, 2)
+        self.take_step(env, 3)
+        self.take_step(env, 0)
+        self.take_step(env, 1)
 
 
 if __name__ == '__main__':

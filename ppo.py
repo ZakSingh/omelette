@@ -1,3 +1,5 @@
+from collections import deque
+
 import torch_geometric as pyg
 import argparse
 import os
@@ -15,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.nn import MemPooling
 import torch.nn.functional as F
 from MathLang import MathLang
+from torch_scatter import scatter_mean
 from rejoice import envs
 
 
@@ -36,6 +39,8 @@ def parse_args():
                         help="the entity (team) of wandb's project")
     parser.add_argument("--capture-video", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
                         help="weather to capture videos of the agent performances (check out `videos` folder)")
+    parser.add_argument("--print-actions", type=bool, default=False,
+                        help="print the (action, reward) tuples that make up each episode")
 
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="egraph-v0",
@@ -88,7 +93,7 @@ def make_env(env_id, seed, idx: int, run_name: str):
         expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
 
         env = gym.make(env_id, lang=lang, expr=expr)
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=10)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=100)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.seed(seed)
         env.action_space.seed(seed)
@@ -104,28 +109,36 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 
 class SAGENetwork(nn.Module):
-
     def __init__(self, num_node_features: int, n_actions: int, dp_rate_linear=0.2, hidden_size: int = 128,
                  out_std: float = np.sqrt(2)):
         super(SAGENetwork, self).__init__()
         self.gnn = pyg.nn.GraphSAGE(in_channels=num_node_features, hidden_channels=hidden_size,
-                                    out_channels=hidden_size, num_layers=3, dropout=0.2)
+                                    out_channels=hidden_size, num_layers=2, act="leaky_relu")
 
-        self.mem1 = MemPooling(hidden_size, 80, heads=5, num_clusters=10)
-        self.mem2 = MemPooling(80, n_actions, heads=5, num_clusters=1)
-
-        # self.head = layer_init(nn.Linear(hidden_size, n_actions), std=out_std)
+        self.mem1 = MemPooling(hidden_size, hidden_size, heads=5, num_clusters=10)
+        self.mem2 = MemPooling(hidden_size, n_actions, heads=5, num_clusters=1)
 
     def forward(self, data: Union[pyg.data.Data, pyg.data.Batch]):
         x = self.gnn(x=data.x, edge_index=data.edge_index)
         x = F.leaky_relu(x)
-        # x = pyg.nn.global_mean_pool(x=x, batch=data.batch)
-        # x = self.head(x)
         x, S1 = self.mem1(x, data.batch)
         x = F.leaky_relu(x)
-        x = F.dropout(x, p=0.2)
         x, S2 = self.mem2(x)
         x = x.squeeze(1)
+        return x
+
+
+class GraphTransformerNetwork(nn.Module):
+    def __init__(self, num_node_features: int, n_actions: int, dp_rate_linear=0.2, hidden_size: int = 128,
+                 out_std: float = np.sqrt(2)):
+        super(GraphTransformerNetwork, self).__init__()
+        self.gnn = pyg.nn.GraphMultisetTransformer(in_channels=num_node_features, hidden_channels=hidden_size,
+                                                   out_channels=n_actions,
+                                                   num_heads=4,
+                                                   layer_norm=True)
+
+    def forward(self, data: Union[pyg.data.Data, pyg.data.Batch]):
+        x = self.gnn(x=data.x, edge_index=data.edge_index, batch=data.batch)
         return x
 
 
@@ -152,7 +165,7 @@ class PPOAgent(nn.Module):
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
 
 
-if __name__ == "__main__":
+def main():
     args = parse_args()
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
@@ -185,13 +198,14 @@ if __name__ == "__main__":
         [make_env(args.env_id, args.seed + i, i, run_name) for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    action_names = [r[0] for r in envs.envs[0].lang.all_rules()] + ["end"]
 
     agent = PPOAgent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
-    # obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
-    obs = []
+    # obs = deque(maxlen=args.num_steps)
+    obs = np.empty(args.num_steps, dtype=object)
 
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -218,7 +232,8 @@ if __name__ == "__main__":
         for step in range(0, args.num_steps):
             global_step += 1 * args.num_envs
             # add the batch of 4 env observations to the obs list at index step
-            obs.append(next_obs)
+            obs[step] = next_obs
+            # obs.append(next_obs)
             dones[step] = next_done
 
             # log the action, logprob, and value for this step into our data storage
@@ -234,17 +249,28 @@ if __name__ == "__main__":
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_done = torch.Tensor(done).to(device)
             # convert next obs to a pytorch geometric batch
-            next_obs = pyg.data.Batch.from_data_list(next_obs)
+            next_obs = pyg.data.Batch.from_data_list(next_obs).to(device)
 
-            for item in info:
+            for env_ind, item in enumerate(info):
                 if "episode" in item.keys():
                     writer.add_scalar("charts/episodic_return", item["episode"]["r"], global_step)
                     writer.add_scalar("charts/episodic_length", item["episode"]["l"], global_step)
                     writer.add_scalar("charts/episodic_cost", item["actual_cost"], global_step)
-
-                    print(f"global_step={global_step}, episodic_return={item['episode']['r']}, episodic_cost={item['actual_cost']}")
+                    print(f"global_step={global_step}, episode_length={item['episode']['l']}, episodic_return={item['episode']['r']:.2f}, episodic_cost={item['actual_cost']}")
+                    if args.print_actions:
+                        start = (step+1) - item["episode"]["l"]
+                        if start < 0:
+                            # start of episode is at end of buffer
+                            start_before = args.num_steps + start
+                            ep_actions = [action_names[int(i)] for i in torch.cat([actions[start_before:][:, env_ind], actions[0:step+1][:, env_ind]])]
+                            ep_rewards = [x.item() for x in list(torch.cat([rewards[start_before:][:, env_ind], rewards[0:step+1][:, env_ind]]))]
+                        else:
+                            ep_actions = [action_names[int(i)] for i in actions[start:step+1][:, env_ind]]
+                            ep_rewards = [x.item() for x in list(rewards[start:step+1][:, env_ind])]
+                        ep_a_r = list(zip(ep_actions, ep_rewards))
+                        print(ep_a_r)
                     break
-
+        # Remember that actions is (n_steps, n_envs, n_actions)
         # bootstrap value if not done
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
@@ -276,8 +302,10 @@ if __name__ == "__main__":
         # flatten the batch
         all_obs_raw = []
         for step_batch in obs:
+            # TODO: this is a performance hog. Find a diff way?
             all_obs_raw += step_batch.to_data_list()
         b_obs = pyg.data.Batch.from_data_list(all_obs_raw)
+
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
         b_advantages = advantages.reshape(-1)
@@ -359,3 +387,6 @@ if __name__ == "__main__":
 
     envs.close()
     writer.close()
+
+if __name__ == "__main__":
+    main()
