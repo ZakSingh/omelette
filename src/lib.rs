@@ -377,13 +377,14 @@ impl EGraph {
         self.egraph.dot().to_png(path).unwrap()
     }
 
-    #[args(iter_limit = "10", time_limit = "10.0", node_limit = "100_000")]
+    #[args(iter_limit = "10", time_limit = "10.0", node_limit = "100_000", use_backoff="false")]
     fn run(
         &mut self,
         rewrites: &PyList,
         iter_limit: usize,
         time_limit: f64,
         node_limit: usize,
+        use_backoff: bool
     ) -> PyResult<&str> {
         let refs = rewrites
             .iter()
@@ -392,13 +393,22 @@ impl EGraph {
         let egraph = std::mem::take(&mut self.egraph);
         let scheduled_runner = Runner::default();
 
-        let runner = scheduled_runner
-            .with_iter_limit(iter_limit)
-            .with_node_limit(node_limit) // node_limit)
-            .with_time_limit(Duration::from_secs_f64(time_limit))
-            .with_egraph(egraph)
-            .with_scheduler(SimpleScheduler)
-            .run(refs.iter().map(|r| &r.rewrite));
+        let runner = if use_backoff {
+            scheduled_runner
+                .with_iter_limit(iter_limit)
+                .with_node_limit(node_limit) // node_limit)
+                .with_time_limit(Duration::from_secs_f64(time_limit))
+                .with_egraph(egraph)
+                .run(refs.iter().map(|r| &r.rewrite))
+        } else {
+            scheduled_runner
+                .with_iter_limit(iter_limit)
+                .with_node_limit(node_limit) // node_limit)
+                .with_time_limit(Duration::from_secs_f64(time_limit))
+                .with_egraph(egraph)
+                .with_scheduler(SimpleScheduler)
+                .run(refs.iter().map(|r| &r.rewrite))
+        };
 
         self.egraph = runner.egraph;
 

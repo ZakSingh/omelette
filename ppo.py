@@ -31,16 +31,10 @@ def parse_args():
                         help="if toggled, `torch.backends.cudnn.deterministic=False`")
     parser.add_argument("--cuda", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
                         help="if toggled, cuda will be enabled by default")
-    parser.add_argument("--track", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
-                        help="if toggled, this experiment will be tracked with Weights and Biases")
-    parser.add_argument("--wandb-project-name", type=str, default="cleanRL",
-                        help="the wandb's project name")
-    parser.add_argument("--wandb-entity", type=str, default=None,
-                        help="the entity (team) of wandb's project")
-    parser.add_argument("--capture-video", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
-                        help="weather to capture videos of the agent performances (check out `videos` folder)")
     parser.add_argument("--print-actions", type=bool, default=False,
                         help="print the (action, reward) tuples that make up each episode")
+    parser.add_argument("--pretrain", type=bool, default=True,
+                        help="Whether or not to pretrain the value and policy networks")
 
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="egraph-v0",
@@ -107,15 +101,6 @@ def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int):
         ops = lang.all_operators_obj()
 
         expr = ops.mul(1, ops.add(7, ops.mul(ops.add(16, 2), ops.mul(4, 0))))
-        # expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
-        # exprs = [
-        #     ops.mul(ops.add(16, 2), ops.mul(4, 0)),
-        #     ops.mul(ops.add(ops.add(16, 2), ops.mul(4, 0)), 1),
-        # ]
-        #
-        # expr = exprs[idx % len(exprs)]
-
-        # run_egg(lang, expr)
 
         env = gym.make(env_id, lang=lang, expr=expr)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
@@ -155,24 +140,13 @@ class PPOAgent(nn.Module):
 def main():
     args = parse_args()
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    if args.track:
-        import wandb
-        wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
-            sync_tensorboard=True,
-            config=vars(args),
-            name=run_name,
-            monitor_gym=True,
-            save_code=True,
-        )
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    # TRY NOT TO MODIFY: seeding
+    # Seed random number generators for reproducible results
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -180,6 +154,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     lang = MathLang()
+    
 
     # env setup
     envs = gym.vector.AsyncVectorEnv(

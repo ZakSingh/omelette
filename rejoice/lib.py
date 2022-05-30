@@ -11,6 +11,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch_geometric.transforms as T
 import time
+import sys
+
+# needed for safe expression generation
+sys.setrecursionlimit(10**5)
+
 
 class ObjectView(object):
     def __init__(self, d):
@@ -19,6 +24,9 @@ class ObjectView(object):
 
 class Language(Protocol):
     """A base Language for an equality saturation task. This will be passed to egg."""
+    @property
+    def name(self):
+        return type(self).__name__
 
     def op_tuple(self, op):
         """Convert an operator string (name, x, y, ...) into a named tuple"""
@@ -106,9 +114,24 @@ class Language(Protocol):
             op_to_ind_table[op] = ind
         return op_to_ind_table
 
-    def encode_egraph(self, egraph: EGraph) -> geom.data.Data:
-        # first_stamp = int(round(time.time() * 1000))
+    def gen_expr(self, root_op=None, p_leaf=0.8):
+        """Generate an arbitrary expression which abides by the language."""
+        ops = self.all_operators()
+        root = np.random.choice(ops) if root_op is None else root_op
+        children = []
+        for i in range(len(root._fields)):
+            if np.random.uniform(0, 1) < p_leaf:
+                children.append(np.random.randint(0, 2))
+            else:
+                chosen_op = np.random.choice(ops)
+                op_children = []
+                for j in range(len(chosen_op._fields)):
+                    op_children.append(self.gen_expr(chosen_op))
+                children.append(chosen_op(*op_children))
+        return root(*children)
 
+    def encode_egraph(self, egraph: EGraph, y=None) -> geom.data.Data:
+        # first_stamp = int(round(time.time() * 1000))
         num_enodes = egraph.num_enodes()
         eclass_ids = egraph.eclass_ids()
         num_eclasses = len(eclass_ids)
@@ -148,7 +171,7 @@ class Language(Protocol):
 
         edge_index = torch.concat([enode_eclass_edges, *all_node_edges], dim=1).long()
         edge_index, _ = geom.utils.add_remaining_self_loops(edge_index)
-        data = geom.data.Data(x=x, edge_index=edge_index)
+        data = geom.data.Data(x=x, edge_index=edge_index, y=y)
         # second_stamp = int(round(time.time() * 1000))
         # Calculate the time taken in milliseconds
         # time_taken = second_stamp - first_stamp
