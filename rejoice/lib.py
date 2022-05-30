@@ -1,4 +1,7 @@
-from .rejoice import *
+import functools
+
+# from .rejoice import *
+from rejoice import *
 from typing import Protocol, Union, NamedTuple
 from collections import OrderedDict
 import torch
@@ -7,7 +10,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import numpy as np
 import torch_geometric.transforms as T
-
+import time
 
 class ObjectView(object):
     def __init__(self, d):
@@ -83,8 +86,8 @@ class Language(Protocol):
 
     def decode_node(self, node: torch.Tensor):
         dnode = {"type": "eclass" if node[0] == 1 else "enode", "is_scalar": bool(node[2]), "value": node[3]}
-        # if it's an enode, find its op type
-        if node[1] == 1:
+        # if it's an enode op, find its op type
+        if node[1] == 1 and node[2] == 0:
             all_ops = self.all_operators()
             ind = torch.argmax(torch.Tensor(node[4:])).item()
             op = all_ops[ind]
@@ -96,38 +99,101 @@ class Language(Protocol):
         onehot[0] = 1
         return onehot
 
+    @functools.cached_property
+    def op_to_ind(self):
+        op_to_ind_table = {}
+        for ind, op in enumerate(self.all_operators()):
+            op_to_ind_table[op] = ind
+        return op_to_ind_table
+
     def encode_egraph(self, egraph: EGraph) -> geom.data.Data:
+        # first_stamp = int(round(time.time() * 1000))
+
+        num_enodes = egraph.num_enodes()
+        eclass_ids = egraph.eclass_ids()
+        num_eclasses = len(eclass_ids)
+        enode_eclass_edges = torch.zeros([2, num_enodes])
+        x = torch.zeros([num_eclasses + num_enodes, self.num_node_features])
+        x[:num_eclasses, 0] = 1  # make eclass nodes
+        x[num_eclasses:, 1] = 1  # mark enodes
+
+        curr = num_eclasses
+        edge_curr = 0
+
+        eclass_to_ind = dict(zip(eclass_ids, range(num_eclasses)))
         classes = egraph.classes()
-        all_nodes = []
-        all_edges = []
-        edge_attr = []
-        eclass_to_ind = {}
 
-        # Insert eclasses first as enodes will refer to them
-        for eclass_id, (data, nodes) in classes.items():
-            all_nodes.append(self.encode_eclass(eclass_id, data))
-            eclass_to_ind[eclass_id] = len(all_nodes) - 1
+        all_node_edges = []
+        # print("enodes", num_enodes, "eclasses", num_eclasses)
 
         for eclass_id, (data, nodes) in classes.items():
+            eclass_ind = eclass_to_ind[eclass_id]
+            num_eclass_nodes = len(nodes)
+            # create edges from eclass to member enodes
+            enode_eclass_edges[0, edge_curr:(edge_curr + num_eclass_nodes)] = eclass_ind
+            enode_eclass_edges[1, edge_curr:(edge_curr + num_eclass_nodes)] = torch.arange(curr, curr + num_eclass_nodes)
+            edge_curr = edge_curr + num_eclass_nodes
+
             for node in nodes:
-                all_nodes.append(self.encode_node(node))
+                if isinstance(node, int):
+                    x[curr, 2] = 1
+                    x[curr, 3] = node
+                else:
+                    x[curr, 4 + self.op_to_ind[type(node)]] = 1  # encode operator type
+                    # connect to child eclasses
+                    if isinstance(node, tuple):
+                        all_node_edges.append(torch.stack([torch.full([len(node)], curr),
+                                              torch.Tensor([eclass_to_ind[str(ecid)] for ecid in node])]))
+                curr += 1
 
-                # connect each node to its eclass
-                all_edges.append(torch.Tensor([eclass_to_ind[eclass_id], len(all_nodes) - 1]))
-                edge_attr.append(torch.Tensor([0, 1]))
-
-                # connect each node to its child eclasses
-                if isinstance(node, tuple):
-                    for ecid in node:
-                        all_edges.append(torch.Tensor([len(all_nodes) - 1, eclass_to_ind[str(ecid)]]))
-                        edge_attr.append(torch.Tensor([1, 0]))
-
-        x = torch.stack(all_nodes, dim=0)
-        edge_index = torch.stack(all_edges, dim=0).T.long()
-        edge_attr = torch.stack(edge_attr, dim=0)
-        edge_index, edge_attr = geom.utils.add_remaining_self_loops(edge_index, edge_attr)
-        data = geom.data.Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+        edge_index = torch.concat([enode_eclass_edges, *all_node_edges], dim=1).long()
+        edge_index, _ = geom.utils.add_remaining_self_loops(edge_index)
+        data = geom.data.Data(x=x, edge_index=edge_index)
+        # second_stamp = int(round(time.time() * 1000))
+        # Calculate the time taken in milliseconds
+        # time_taken = second_stamp - first_stamp
+        # print("time_taken", time_taken, data)
         return data
+    #
+    # def encode_egraph(self, egraph: EGraph) -> geom.data.Data:
+    #     """Encode an egg egraph into a Pytorch Geometric data object"""
+    #     # first_stamp = int(round(time.time() * 1000))
+    #
+    #     classes = egraph.classes()
+    #     all_nodes = []
+    #     all_edges = []
+    #     edge_attr = []
+    #     eclass_to_ind = {}
+    #
+    #     # Insert eclasses first as enodes will refer to them
+    #     for eclass_id, (data, nodes) in classes.items():
+    #         all_nodes.append(self.encode_eclass(eclass_id, data))
+    #         eclass_to_ind[eclass_id] = len(all_nodes) - 1
+    #
+    #     for eclass_id, (data, nodes) in classes.items():
+    #         for node in nodes:
+    #             all_nodes.append(self.encode_node(node))
+    #
+    #             # connect each node to its eclass
+    #             all_edges.append(torch.Tensor([eclass_to_ind[eclass_id], len(all_nodes) - 1]))
+    #             edge_attr.append(torch.Tensor([0, 1]))
+    #
+    #             # connect each node to its child eclasses
+    #             if isinstance(node, tuple):
+    #                 for ecid in node:
+    #                     all_edges.append(torch.Tensor([len(all_nodes) - 1, eclass_to_ind[str(ecid)]]))
+    #                     edge_attr.append(torch.Tensor([1, 0]))
+    #
+    #     x = torch.stack(all_nodes, dim=0)
+    #     edge_index = torch.stack(all_edges, dim=0).T.long()
+    #     edge_attr = torch.stack(edge_attr, dim=0)
+    #     # edge_index, edge_attr = geom.utils.add_remaining_self_loops(edge_index, edge_attr)
+    #     data = geom.data.Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+    #     # second_stamp = int(round(time.time() * 1000))
+    #
+    #     # time_taken = second_stamp - first_stamp
+    #     # print("time_taken", time_taken)
+    #     return data
 
     def viz_egraph(self, data):
         """Vizualize a PyTorch Geometric data object containing an egraph."""
@@ -149,5 +215,5 @@ class Language(Protocol):
 
         pos = nx.nx_agraph.graphviz_layout(g, prog="dot")
         nx.draw(g, labels=node_labels, pos=pos)
-        plt.imshow()
+        plt.show()
         return g

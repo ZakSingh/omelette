@@ -32,32 +32,38 @@ class EGraphEnv(gym.Env):
         is_stop_action = action == len(self.rewrite_rules)
         if is_stop_action:
             # Agent has chosen to stop optimizing and terminate current episode
-            # punish agent if it ends the episode on the initial step (i.e. the first step)
+            # punish agent if it ends the episode without any improvement
             reward = -1.0 if self.prev_cost == self.max_cost else 0.0
             # TODO: should the next obs be None or still the current state?
-            return self._get_obs(), reward, True, info
+            # return self._get_obs(), reward, True, info
+            return None, reward, True, info
 
         rewrite_to_apply = [self.rewrite_rules[action]]
-        stop_reason = self.egraph.run(rewrite_to_apply, iter_limit=1)
+        stop_reason = self.egraph.run(rewrite_to_apply, iter_limit=1, node_limit=10000)
         info["stop_reason"] = stop_reason
-
         if stop_reason == 'SATURATED':
             # if it was saturated, applying the rule did nothing; no need to re-extract
-            reward = -0.3
+            reward = -0.5
+        elif stop_reason == 'NODE_LIMIT':
+            reward = -1.0
         else:
             best_cost, best_expr = self.egraph.extract(self.expr)
             best_cost = float(best_cost)
             info["actual_cost"] = best_cost
             if best_cost == self.prev_cost:
                 # expanded egraph, but didn't get us a better extraction cost
-                reward = -0.2
+                reward = -0.05
             else:
                 reward = (self.prev_cost - best_cost) / self.max_cost
                 self.prev_cost = best_cost
             if stop_reason != "ITERATION_LIMIT":
-                reward -= 1.0  # punish for blowing up egraph or timing out
+                reward -= 1.0  # punish for timing out
+
         is_done = is_terminal(stop_reason)
-        new_obs = self._get_obs()
+        if stop_reason != "NODE_LIMIT":
+            new_obs = self._get_obs()
+        else:
+            new_obs = None
 
         return new_obs, reward, is_done, info
 

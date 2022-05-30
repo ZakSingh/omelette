@@ -15,11 +15,21 @@ class MyTestCase(unittest.TestCase):
         self.lang = TestLang()
         self.ops = self.lang.all_operators_obj()
         # This expr reduces to 0
+        # self.expr = self.ops.mul(self.ops.add(16, 2), self.ops.mul(4, 0))
         self.expr = self.ops.mul(self.ops.add(16, 2), self.ops.mul(4, 0))
+
         self.egraph = EGraph()
 
     def test_node_feature_count(self):
         self.assertEqual(self.lang.num_node_features(), 6)
+
+    def test_egraph_encode_fast(self):
+        self.egraph.add(self.expr)
+        data1 = self.lang.encode_egraph_fast(self.egraph)
+        data2 = self.lang.encode_egraph(self.egraph)
+
+        self.lang.viz_egraph(data1)
+        self.lang.viz_egraph(data2)
 
     def test_egraph_encode(self):
         self.egraph.add(self.expr)

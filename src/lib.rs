@@ -253,6 +253,7 @@ impl Rewrite {
 }
 
 #[derive(Default)]
+#[derive(Clone)]
 struct PyAnalysis {
     eval: Option<PyObject>,
 }
@@ -366,6 +367,12 @@ impl EGraph {
         self.egraph.rebuild()
     }
 
+    fn clone(&mut self) -> EGraph {
+        Self {
+            egraph: self.egraph.clone()
+        }
+    }
+
     fn graphviz(&mut self, path: &str) {
         self.egraph.dot().to_png(path).unwrap()
     }
@@ -387,7 +394,7 @@ impl EGraph {
 
         let runner = scheduled_runner
             .with_iter_limit(iter_limit)
-            .with_node_limit(node_limit)
+            .with_node_limit(node_limit) // node_limit)
             .with_time_limit(Duration::from_secs_f64(time_limit))
             .with_egraph(egraph)
             .with_scheduler(SimpleScheduler)
@@ -399,7 +406,13 @@ impl EGraph {
             StopReason::IterationLimit(_) => Ok("ITERATION_LIMIT"),
             StopReason::NodeLimit(_) => Ok("NODE_LIMIT"),
             StopReason::Saturated => Ok("SATURATED"),
-            StopReason::TimeLimit(_) => Ok("TIME_LIMIT"),
+            StopReason::TimeLimit(_) => {
+                if self.egraph.total_number_of_nodes() > node_limit {
+                    Ok("NODE_LIMIT")
+                } else {
+                    Ok("TIME_LIMIT")
+                }
+            },
             StopReason::Other(_) => Ok("OTHER")
         }
     }
@@ -434,6 +447,21 @@ impl EGraph {
         }
 
         nodes_by_class.to_object(py)
+    }
+
+    fn num_eclasses(&mut self) -> usize {
+        *&self.egraph.number_of_classes()
+    }
+
+    fn num_enodes(&mut self) -> usize {
+        *&self.egraph.total_number_of_nodes()
+    }
+
+    fn eclass_ids(&mut self) -> Vec<String> {
+        let eg = &self.egraph;
+        let mut ids: Vec<String> = eg.classes().map(|c| c.id.to_string()).collect();
+        ids.sort();
+        return ids
     }
 }
 

@@ -2,12 +2,10 @@ import tracemalloc
 
 import torch
 from MathLang import MathLang
-from rejoice import EGraph, ppo_model, generator, envs
+from rejoice import EGraph, generator, envs
 from pytorch_lightning import Trainer, loggers
 import os
 import gym
-from rejoice.dqn_model import DQNLightning
-from rejoice.dqn import DQN, rollout
 import logging
 
 FORMAT = '%(levelname)s %(name)s %(asctime)-15s %(filename)s:%(lineno)d %(message)s'

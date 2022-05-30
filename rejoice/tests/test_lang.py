@@ -15,11 +15,14 @@ class TestLang(Language):
 
     @functools.cache
     def all_rules(self) -> list[list]:
-        a, b = vars("a b")
+        a, b, c = vars("a b c")
         op = self.all_operators_obj()
         return [
                 ["commute-add", op.add(a, b), op.add(b, a)],
                 ["commute-mul", op.mul(a, b), op.mul(b, a)],
+
+                ["assoc-add", op.add(op.add(a, b), c), op.add(a, op.add(b, c))],
+                ["assoc-mul", op.mul(op.mul(a, b), c), op.mul(a, op.mul(b, c))],
 
                 ["add-0", op.add(a, 0), a],
                 ["mul-0", op.mul(a, 0), 0],

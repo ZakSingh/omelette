@@ -14,11 +14,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
-from torch_geometric.nn import MemPooling
-import torch.nn.functional as F
 from MathLang import MathLang
-from torch_scatter import scatter_mean
-from rejoice import envs
+from rejoice import envs, EGraph
+import time
+
+from rejoice.networks import SAGENetwork, GATNetwork, GCNNetwork, GraphTransformerNetwork
 
 
 def parse_args():
@@ -45,13 +45,15 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="egraph-v0",
                         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=100_000,
+    parser.add_argument("--total-timesteps", type=int, default=2_000_000,
                         help="total timesteps of the experiments")
-    parser.add_argument("--learning-rate", type=float, default=2.5e-5,
+    parser.add_argument("--max-episode-steps", type=int, default=500,
+                        help="total timesteps of the experiments")
+    parser.add_argument("--learning-rate", type=float, default=2.5e-5,  # 2.5e-5,
                         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=4,
                         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=128,
+    parser.add_argument("--num-steps", type=int, default=512, # 256,  # 256, # 128,
                         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
                         help="Toggle learning rate annealing for policy and value networks")
@@ -85,15 +87,38 @@ def parse_args():
     return args
 
 
-def make_env(env_id, seed, idx: int, run_name: str):
+def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int):
+    def run_egg(lang, expr):
+        print(f"running egg for env {idx}")
+        first_stamp = int(round(time.time() * 1000))
+        egraph = EGraph()
+        egraph.add(expr)
+        egraph.run(lang.rewrite_rules(), 3)
+        best_cost, best_expr = egraph.extract(expr)
+        second_stamp = int(round(time.time() * 1000))
+        # Calculate the time taken in milliseconds
+        time_taken = second_stamp - first_stamp
+        # egraph.graphviz("egg_best.png")
+        print(f"env {idx} egg best cost:", best_cost, "in", f"{time_taken}ms", "best expr: ", best_expr)
+
     def thunk():
         # TODO: refactor so the lang and expr can be passed in
         lang = MathLang()
         ops = lang.all_operators_obj()
-        expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
+
+        expr = ops.mul(1, ops.add(7, ops.mul(ops.add(16, 2), ops.mul(4, 0))))
+        # expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
+        # exprs = [
+        #     ops.mul(ops.add(16, 2), ops.mul(4, 0)),
+        #     ops.mul(ops.add(ops.add(16, 2), ops.mul(4, 0)), 1),
+        # ]
+        #
+        # expr = exprs[idx % len(exprs)]
+
+        # run_egg(lang, expr)
 
         env = gym.make(env_id, lang=lang, expr=expr)
-        env = gym.wrappers.TimeLimit(env, max_episode_steps=100)
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.seed(seed)
         env.action_space.seed(seed)
@@ -102,57 +127,19 @@ def make_env(env_id, seed, idx: int, run_name: str):
     return thunk
 
 
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
-
-
-class SAGENetwork(nn.Module):
-    def __init__(self, num_node_features: int, n_actions: int, dp_rate_linear=0.2, hidden_size: int = 128,
-                 out_std: float = np.sqrt(2)):
-        super(SAGENetwork, self).__init__()
-        self.gnn = pyg.nn.GraphSAGE(in_channels=num_node_features, hidden_channels=hidden_size,
-                                    out_channels=hidden_size, num_layers=2, act="leaky_relu")
-
-        self.mem1 = MemPooling(hidden_size, hidden_size, heads=5, num_clusters=10)
-        self.mem2 = MemPooling(hidden_size, n_actions, heads=5, num_clusters=1)
-
-    def forward(self, data: Union[pyg.data.Data, pyg.data.Batch]):
-        x = self.gnn(x=data.x, edge_index=data.edge_index)
-        x = F.leaky_relu(x)
-        x, S1 = self.mem1(x, data.batch)
-        x = F.leaky_relu(x)
-        x, S2 = self.mem2(x)
-        x = x.squeeze(1)
-        return x
-
-
-class GraphTransformerNetwork(nn.Module):
-    def __init__(self, num_node_features: int, n_actions: int, dp_rate_linear=0.2, hidden_size: int = 128,
-                 out_std: float = np.sqrt(2)):
-        super(GraphTransformerNetwork, self).__init__()
-        self.gnn = pyg.nn.GraphMultisetTransformer(in_channels=num_node_features, hidden_channels=hidden_size,
-                                                   out_channels=n_actions,
-                                                   num_heads=4,
-                                                   layer_norm=True)
-
-    def forward(self, data: Union[pyg.data.Data, pyg.data.Batch]):
-        x = self.gnn(x=data.x, edge_index=data.edge_index, batch=data.batch)
-        return x
-
-
 class PPOAgent(nn.Module):
-    def __init__(self, envs: gym.vector.SyncVectorEnv):
+    def __init__(self, envs: gym.vector.AsyncVectorEnv):
         super().__init__()
-        self.critic = SAGENetwork(num_node_features=envs.single_observation_space.num_node_features,
-                                  n_actions=1,
-                                  hidden_size=128,
-                                  out_std=1.)
-        self.actor = SAGENetwork(num_node_features=envs.single_observation_space.num_node_features,
-                                 n_actions=envs.single_action_space.n,
+        self.critic = GATNetwork(num_node_features=envs.single_observation_space.num_node_features,
+                                 n_actions=1,
+                                 n_layers=3,
                                  hidden_size=128,
-                                 out_std=0.01)  # make probability of each action similar to start with
+                                 out_std=1.)
+        self.actor = GATNetwork(num_node_features=envs.single_observation_space.num_node_features,
+                                n_actions=envs.single_action_space.n,
+                                n_layers=3,
+                                hidden_size=128,
+                                out_std=0.01)  # make probability of each action similar to start with
 
     def get_value(self, x):
         return self.critic(x)
@@ -192,19 +179,21 @@ def main():
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    lang = MathLang()
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, run_name) for i in range(args.num_envs)]
+    envs = gym.vector.AsyncVectorEnv(
+        [make_env(args.env_id, args.seed + i, i, run_name, args.max_episode_steps) for i in range(args.num_envs)],
+        shared_memory=False
     )
+
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
-    action_names = [r[0] for r in envs.envs[0].lang.all_rules()] + ["end"]
+    action_names = [r[0] for r in lang.all_rules()] + ["end"]
 
     agent = PPOAgent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
-    # obs = deque(maxlen=args.num_steps)
     obs = np.empty(args.num_steps, dtype=object)
 
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
@@ -242,7 +231,6 @@ def main():
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
-
             # execute the chosen action
             next_obs, reward, done, info = envs.step(action.cpu().numpy())
             # log the reward into data storage at this step
@@ -256,17 +244,20 @@ def main():
                     writer.add_scalar("charts/episodic_return", item["episode"]["r"], global_step)
                     writer.add_scalar("charts/episodic_length", item["episode"]["l"], global_step)
                     writer.add_scalar("charts/episodic_cost", item["actual_cost"], global_step)
-                    print(f"global_step={global_step}, episode_length={item['episode']['l']}, episodic_return={item['episode']['r']:.2f}, episodic_cost={item['actual_cost']}")
+                    print(
+                        f"global_step={global_step}, episode_length={item['episode']['l']}, episodic_return={item['episode']['r']:.2f}, episodic_cost={item['actual_cost']}")
                     if args.print_actions:
-                        start = (step+1) - item["episode"]["l"]
+                        start = (step + 1) - item["episode"]["l"]
                         if start < 0:
                             # start of episode is at end of buffer
                             start_before = args.num_steps + start
-                            ep_actions = [action_names[int(i)] for i in torch.cat([actions[start_before:][:, env_ind], actions[0:step+1][:, env_ind]])]
-                            ep_rewards = [x.item() for x in list(torch.cat([rewards[start_before:][:, env_ind], rewards[0:step+1][:, env_ind]]))]
+                            ep_actions = [action_names[int(i)] for i in torch.cat(
+                                [actions[start_before:][:, env_ind], actions[0:step + 1][:, env_ind]])]
+                            ep_rewards = [x.item() for x in list(
+                                torch.cat([rewards[start_before:][:, env_ind], rewards[0:step + 1][:, env_ind]]))]
                         else:
-                            ep_actions = [action_names[int(i)] for i in actions[start:step+1][:, env_ind]]
-                            ep_rewards = [x.item() for x in list(rewards[start:step+1][:, env_ind])]
+                            ep_actions = [action_names[int(i)] for i in actions[start:step + 1][:, env_ind]]
+                            ep_rewards = [x.item() for x in list(rewards[start:step + 1][:, env_ind])]
                         ep_a_r = list(zip(ep_actions, ep_rewards))
                         print(ep_a_r)
                     break
@@ -387,6 +378,7 @@ def main():
 
     envs.close()
     writer.close()
+
 
 if __name__ == "__main__":
     main()
