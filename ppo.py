@@ -39,7 +39,7 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="egraph-v0",
                         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=2_000_000,
+    parser.add_argument("--total-timesteps", type=int, default=2_000_000,  # 2_000_000,
                         help="total timesteps of the experiments")
     parser.add_argument("--max-episode-steps", type=int, default=500,
                         help="total timesteps of the experiments")
@@ -47,7 +47,7 @@ def parse_args():
                         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=4,
                         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=512, # 256,  # 256, # 128,
+    parser.add_argument("--num-steps", type=int, default=256, # 128,
                         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
                         help="Toggle learning rate annealing for policy and value networks")
@@ -100,8 +100,10 @@ def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int):
         lang = MathLang()
         ops = lang.all_operators_obj()
 
+        # expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
         expr = ops.mul(1, ops.add(7, ops.mul(ops.add(16, 2), ops.mul(4, 0))))
-
+        # if idx == 0:
+        #     run_egg(lang, expr)
         env = gym.make(env_id, lang=lang, expr=expr)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -154,7 +156,6 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     lang = MathLang()
-    
 
     # env setup
     envs = gym.vector.AsyncVectorEnv(
@@ -163,14 +164,13 @@ def main():
     )
 
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
-    action_names = [r[0] for r in lang.all_rules()] + ["end"]
+    action_names = [r[0] for r in lang.all_rules()] + ["end", "rebase"]
 
     agent = PPOAgent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
     obs = np.empty(args.num_steps, dtype=object)
-
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)

@@ -48,13 +48,9 @@ class PretrainModule(pl.LightningModule):
         self.loss_module = nn.CrossEntropyLoss()
 
     def forward(self, data):
-        x = self.model(data).squeeze()
-        print(x)
-        print(data.y)
+        x = self.model(data)
         loss = self.loss_module(input=x, target=data.y)
-        print(loss)
-        # y = data.y.unsqueeze()
-        acc = self.accuracy(x, y)
+        acc = self.accuracy(x, data.y)
         return loss, acc
 
     def configure_optimizers(self):

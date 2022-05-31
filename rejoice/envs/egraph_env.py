@@ -19,8 +19,9 @@ class EGraphEnv(gym.Env):
         super(EGraphEnv, self).__init__()
         self.lang = lang
         self.expr = expr
+        self.orig_expr = expr
         self.rewrite_rules = lang.rewrite_rules()
-        self.action_space = spaces.Discrete(len(self.rewrite_rules) + 1,)
+        self.action_space = spaces.Discrete(lang.num_actions + 2)
         self.observation_space = GraphSpace(num_node_features=lang.num_node_features,
                                             low=0,
                                             high=lang.get_feature_upper_bounds())
@@ -29,7 +30,8 @@ class EGraphEnv(gym.Env):
 
     def step(self, action: any) -> Tuple[any, float, bool, dict]:
         info = {"actual_cost": self.prev_cost}
-        is_stop_action = action == len(self.rewrite_rules)
+
+        is_stop_action = action == self.lang.num_actions
         if is_stop_action:
             # Agent has chosen to stop optimizing and terminate current episode
             # punish agent if it ends the episode without any improvement
@@ -38,8 +40,31 @@ class EGraphEnv(gym.Env):
             # return self._get_obs(), reward, True, info
             return None, reward, True, info
 
+        is_rebase_action = action == self.lang.num_actions + 1
+        if is_rebase_action:
+            # "rebase" the egraph to be the current extraction result.
+            # this can shrink the egraph and help us recover from e-node explosion.
+            # print("rebasing egraph")
+            # print("prev_cost", self.prev_cost)
+            best_cost, best_expr = self.egraph.extract(self.expr)
+            # print("best_cost", best_cost, "best_expr", best_expr)
+            self.expr = best_expr
+            # re-create the egraph given this new expression
+            self.egraph = EGraph()
+            self.egraph.add(self.expr)
+            # self.max_cost = float(self.egraph.extract(self.expr)[0])
+            self.prev_cost = float(self.egraph.extract(self.expr)[0])  # TODO: is this needed? or can the prev best_cost be used?
+            # new_obs = self.reset()
+            # print("reset", new_obs)
+            new_obs = self._get_obs()
+            reward = 0.0
+            is_done = False
+            info["actual_cost"] = self.prev_cost
+            return new_obs, reward, is_done, info
+
+        # Normal rewrite action choice path
         rewrite_to_apply = [self.rewrite_rules[action]]
-        stop_reason = self.egraph.run(rewrite_to_apply, iter_limit=1, node_limit=10000)
+        stop_reason = self.egraph.run(rewrite_to_apply, iter_limit=1, node_limit=10_000)
         info["stop_reason"] = stop_reason
         if stop_reason == 'SATURATED':
             # if it was saturated, applying the rule did nothing; no need to re-extract
@@ -75,6 +100,7 @@ class EGraphEnv(gym.Env):
             options: Optional[dict] = None,
     ) -> Union[any, tuple[any, dict]]:
         self.egraph = EGraph()
+        self.expr = self.orig_expr
         self.egraph.add(self.expr)
         self.max_cost = float(self.egraph.extract(self.expr)[0])
         self.prev_cost = self.max_cost

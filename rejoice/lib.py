@@ -41,6 +41,10 @@ class Language(Protocol):
     def all_operators(self) -> list[tuple]:
         ...
 
+    @property
+    def num_actions(self) -> int:
+        return len(self.all_rules())
+
     def all_operators_obj(self):
         op_dict = dict([(operator.__name__.lower(), operator) for operator in self.all_operators()])
         return ObjectView(op_dict)

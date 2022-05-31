@@ -35,6 +35,7 @@ class EGraphSolver:
             action, stop_reason, cost = self.step(egraph, np.random.randint(0, len(self.rewrite_rules)))
             if stop_reason == 'NODE_LIMIT':
                 print("hit node limit when searching...")
+                raise Exception
             elif stop_reason != 'SATURATED':  # if 'SATURATED', the step didn't change the egraph; we can filter it
                 steps.append(action)
                 if cost <= best_possible_cost:
@@ -65,6 +66,9 @@ class EGraphSolver:
                 os.makedirs(lang_name)
             torch.save(data, f'{lang_name}/{lang_name}_a{action}_n{len(data.x)}_e{len(data.edge_index[0])}_{time.strftime("%Y%m%d-%H%M%S")}.pt')
             egraph.run([self.lang.rewrite_rules()[action]], iter_limit=1, node_limit=10_000)
+        # Add termination action
+        data = self.lang.encode_egraph(egraph, self.lang.num_actions)
+        torch.save(data, f'{lang_name}/{lang_name}_a{action}_n{len(data.x)}_e{len(data.edge_index[0])}_{time.strftime("%Y%m%d-%H%M%S")}.pt')
 
     def step(self, egraph: EGraph, action: int):
         rewrite_to_apply = [self.rewrite_rules[action]]
@@ -88,13 +92,16 @@ class EGraphSolver:
 def generate_dataset(lang: Language, num=10):
     exprs = [lang.gen_expr() for i in range(num)]
 
-    for expr in exprs:
+    for ind, expr in enumerate(exprs):
+        print("Generating expr", ind)
         solver = EGraphSolver(lang, expr)
-        solver.optimize()
+        try:
+            solver.optimize()
+        except:
+            continue
 
 
 if __name__ == "__main__":
     lang = TestLang()
-    gs = GraphSpace(num_node_features=lang.num_node_features, low=0, high=1, dtype=np.int)
     dataset = PretrainingDataset(lang=lang, root=lang.name)
-    generate_dataset(lang, 1000)
+    generate_dataset(lang, 10000)

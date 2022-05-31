@@ -24,11 +24,12 @@ class GATNetwork(nn.Module):
                               out_channels=hidden_size, num_layers=n_layers, add_self_loops=False,
                               norm=pyg.nn.GraphNorm(in_channels=hidden_size),
                               act="leaky_relu")
-        self.head = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.LeakyReLU(), layer_init(nn.Linear(hidden_size, n_actions), std=out_std))
+        self.head = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.LeakyReLU(),
+                                  layer_init(nn.Linear(hidden_size, n_actions), std=out_std))
 
     def forward(self, data: Union[pyg.data.Data, pyg.data.Batch]):
         x = self.gnn(x=data.x, edge_index=data.edge_index)
-        x = pyg.nn.global_mean_pool(x=x, batch=data.batch)
+        x = pyg.nn.global_add_pool(x=x, batch=data.batch)
         x = self.head(x)
         return x
 
@@ -43,7 +44,7 @@ class GCNNetwork(nn.Module):
 
     def forward(self, data: Union[pyg.data.Data, pyg.data.Batch]):
         x = self.gnn(x=data.x, edge_index=data.edge_index)
-        x = pyg.nn.global_mean_pool(x=x, batch=data.batch)
+        x = pyg.nn.global_add_pool(x=x, batch=data.batch)
         x = self.head(x)
         return x
 
