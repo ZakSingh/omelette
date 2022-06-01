@@ -11,3 +11,5 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 
+[tool.pyright]
+reportGeneralTypeIssues = false

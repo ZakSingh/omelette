@@ -13,6 +13,7 @@ import torch.optim as optim
 import os
 import torchmetrics
 
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_node_features", type=int, default=7,
@@ -81,7 +82,7 @@ def main():
             "num_node_features": lang.num_node_features  # args.num_node_features
         }),
         "single_action_space": Struct(**{
-            "n": len(lang.all_rules())  # args.num_actions
+            "n": lang.num_actions + 1  # args.num_actions
         })
     })
 

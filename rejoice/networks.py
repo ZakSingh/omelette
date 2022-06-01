@@ -34,6 +34,25 @@ class GATNetwork(nn.Module):
         return x
 
 
+class GINNetwork(nn.Module):
+
+    def __init__(self, num_node_features: int, n_actions: int, n_layers: int = 3, hidden_size: int = 128,
+                 out_std=np.sqrt(2)):
+        super(GINNetwork, self).__init__()
+        self.gnn = pyg.nn.GIN(in_channels=num_node_features, hidden_channels=hidden_size,
+                              out_channels=hidden_size, num_layers=n_layers,
+                              norm=pyg.nn.GraphNorm(in_channels=hidden_size),
+                              act="leaky_relu")
+        self.head = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.LeakyReLU(),
+                                  layer_init(nn.Linear(hidden_size, n_actions), std=out_std))
+
+    def forward(self, data: Union[pyg.data.Data, pyg.data.Batch]):
+        x = self.gnn(x=data.x, edge_index=data.edge_index)
+        x = pyg.nn.global_add_pool(x=x, batch=data.batch)
+        x = self.head(x)
+        return x
+
+
 class GCNNetwork(nn.Module):
 
     def __init__(self, num_node_features: int, n_actions: int, hidden_size: int = 128, out_std=np.sqrt(2)):
@@ -50,14 +69,16 @@ class GCNNetwork(nn.Module):
 
 
 class SAGENetwork(nn.Module):
-    def __init__(self, num_node_features: int, n_actions: int, dp_rate_linear=0.2, hidden_size: int = 128,
+    def __init__(self, num_node_features: int, n_actions: int, n_layers: int = 3, hidden_size: int = 128,
                  out_std: float = np.sqrt(2)):
         super(SAGENetwork, self).__init__()
         self.gnn = pyg.nn.GraphSAGE(in_channels=num_node_features, hidden_channels=hidden_size,
-                                    out_channels=hidden_size, num_layers=3, act="leaky_relu")
+                                    out_channels=hidden_size, num_layers=n_layers, act="leaky_relu")
 
-        self.mem1 = pyg.nn.MemPooling(hidden_size, hidden_size, heads=4, num_clusters=10)
-        self.mem2 = pyg.nn.MemPooling(hidden_size, n_actions, heads=4, num_clusters=1)
+        self.mem1 = pyg.nn.MemPooling(
+            hidden_size, hidden_size, heads=4, num_clusters=10)
+        self.mem2 = pyg.nn.MemPooling(
+            hidden_size, n_actions, heads=4, num_clusters=1)
 
     def forward(self, data: Union[pyg.data.Data, pyg.data.Batch]):
         x = self.gnn(x=data.x, edge_index=data.edge_index)

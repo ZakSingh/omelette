@@ -1,4 +1,6 @@
 from collections import deque
+from PropLang import PropLang
+from rejoice.lib import Language
 
 import torch_geometric as pyg
 import argparse
@@ -18,7 +20,7 @@ from MathLang import MathLang
 from rejoice import envs, EGraph
 import time
 
-from rejoice.networks import SAGENetwork, GATNetwork, GCNNetwork, GraphTransformerNetwork
+from rejoice.networks import SAGENetwork, GATNetwork, GCNNetwork, GraphTransformerNetwork, GINNetwork
 
 
 def parse_args():
@@ -31,24 +33,29 @@ def parse_args():
                         help="if toggled, `torch.backends.cudnn.deterministic=False`")
     parser.add_argument("--cuda", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
                         help="if toggled, cuda will be enabled by default")
+
     parser.add_argument("--print-actions", type=bool, default=False,
                         help="print the (action, reward) tuples that make up each episode")
     parser.add_argument("--pretrain", type=bool, default=True,
                         help="Whether or not to pretrain the value and policy networks")
+    parser.add_argument("--lang", type=str, default="PROP",
+                        help="The language to use. One of PROP, MATH, TENSOR.")
 
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="egraph-v0",
                         help="the id of the environment")
     parser.add_argument("--total-timesteps", type=int, default=2_000_000,  # 2_000_000,
                         help="total timesteps of the experiments")
-    parser.add_argument("--max-episode-steps", type=int, default=500,
-                        help="total timesteps of the experiments")
-    parser.add_argument("--learning-rate", type=float, default=2.5e-5,  # 2.5e-5,
+    parser.add_argument("--max-episode-steps", type=int, default=100,
+                        help="the maximum number of steps in any episode")
+    parser.add_argument("--learning-rate", type=float, default=2.5e-5,
                         help="the learning rate of the optimizer")
-    parser.add_argument("--num-envs", type=int, default=4,
+    parser.add_argument("--num-envs", type=int, default=8,
                         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=256, # 128,
+    parser.add_argument("--num-steps", type=int, default=256,
                         help="the number of steps to run in each environment per policy rollout")
+
+    # Below - these shouldn't be changed much.
     parser.add_argument("--anneal-lr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
                         help="Toggle learning rate annealing for policy and value networks")
     parser.add_argument("--gae", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
@@ -81,9 +88,9 @@ def parse_args():
     return args
 
 
-def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int):
-    def run_egg(lang, expr):
-        print(f"running egg for env {idx}")
+def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang_name: str):
+    def run_egg(lang: Language, expr):
+        print(f"running egg for env {idx}", "expr", expr)
         first_stamp = int(round(time.time() * 1000))
         egraph = EGraph()
         egraph.add(expr)
@@ -93,15 +100,23 @@ def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int):
         # Calculate the time taken in milliseconds
         time_taken = second_stamp - first_stamp
         # egraph.graphviz("egg_best.png")
-        print(f"env {idx} egg best cost:", best_cost, "in", f"{time_taken}ms", "best expr: ", best_expr)
+        print(f"env {idx} egg best cost:", best_cost, "in",
+              f"{time_taken}ms", "best expr: ", best_expr)
 
     def thunk():
         # TODO: refactor so the lang and expr can be passed in
-        lang = MathLang()
-        ops = lang.all_operators_obj()
+        lang = get_lang_from_str(lang_name)
+        ops = lang.all_operators_dict()
 
-        # expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
-        expr = ops.mul(1, ops.add(7, ops.mul(ops.add(16, 2), ops.mul(4, 0))))
+        if lang_name == "PROP":
+            AND, NOT, OR, IM = ops["and"], ops["not"], ops["or"], ops["implies"]
+            x, y, z = "x", "y", "z"
+            expr = AND(IM(NOT(y), NOT(x)), IM(y, z))
+            run_egg(lang, expr)
+        elif lang_name == "MATH":
+            expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
+            expr = ops.mul(1, ops.add(
+                7, ops.mul(ops.add(16, 2), ops.mul(4, 0))))
         # if idx == 0:
         #     run_egg(lang, expr)
         env = gym.make(env_id, lang=lang, expr=expr)
@@ -112,6 +127,13 @@ def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int):
         return env
 
     return thunk
+
+
+def get_lang_from_str(name: str) -> Language:
+    if name == "PROP":
+        return PropLang()
+    elif name == "MATH":
+        return MathLang()
 
 
 class PPOAgent(nn.Module):
@@ -145,7 +167,8 @@ def main():
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        "|param|value|\n|-|-|\n%s" % (
+            "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
     # Seed random number generators for reproducible results
@@ -153,17 +176,20 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
-
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-    lang = MathLang()
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    print(device)
+    lang = get_lang_from_str(args.lang)
 
     # env setup
     envs = gym.vector.AsyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, run_name, args.max_episode_steps) for i in range(args.num_envs)],
+        [make_env(args.env_id, args.seed + i, i, run_name,
+                  args.max_episode_steps, args.lang) for i in range(args.num_envs)],
         shared_memory=False
     )
 
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    assert isinstance(envs.single_action_space,
+                      gym.spaces.Discrete), "only discrete action space is supported"
     action_names = [r[0] for r in lang.all_rules()] + ["end", "rebase"]
 
     agent = PPOAgent(envs).to(device)
@@ -171,7 +197,8 @@ def main():
 
     # ALGO Logic: Storage setup
     obs = np.empty(args.num_steps, dtype=object)
-    actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
+    actions = torch.zeros((args.num_steps, args.num_envs) +
+                          envs.single_action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -202,7 +229,8 @@ def main():
 
             # log the action, logprob, and value for this step into our data storage
             with torch.no_grad():  # no grad b/c we're just rolling out, not training
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                action, logprob, _, value = agent.get_action_and_value(
+                    next_obs)
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -216,9 +244,12 @@ def main():
 
             for env_ind, item in enumerate(info):
                 if "episode" in item.keys():
-                    writer.add_scalar("charts/episodic_return", item["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length", item["episode"]["l"], global_step)
-                    writer.add_scalar("charts/episodic_cost", item["actual_cost"], global_step)
+                    writer.add_scalar("charts/episodic_return",
+                                      item["episode"]["r"], global_step)
+                    writer.add_scalar("charts/episodic_length",
+                                      item["episode"]["l"], global_step)
+                    writer.add_scalar("charts/episodic_cost",
+                                      item["actual_cost"], global_step)
                     print(
                         f"global_step={global_step}, episode_length={item['episode']['l']}, episodic_return={item['episode']['r']:.2f}, episodic_cost={item['actual_cost']}")
                     if args.print_actions:
@@ -231,8 +262,10 @@ def main():
                             ep_rewards = [x.item() for x in list(
                                 torch.cat([rewards[start_before:][:, env_ind], rewards[0:step + 1][:, env_ind]]))]
                         else:
-                            ep_actions = [action_names[int(i)] for i in actions[start:step + 1][:, env_ind]]
-                            ep_rewards = [x.item() for x in list(rewards[start:step + 1][:, env_ind])]
+                            ep_actions = [
+                                action_names[int(i)] for i in actions[start:step + 1][:, env_ind]]
+                            ep_rewards = [x.item() for x in list(
+                                rewards[start:step + 1][:, env_ind])]
                         ep_a_r = list(zip(ep_actions, ep_rewards))
                         print(ep_a_r)
                     break
@@ -250,8 +283,10 @@ def main():
                     else:
                         nextnonterminal = 1.0 - dones[t + 1]
                         nextvalues = values[t + 1]
-                    delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                    advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                    delta = rewards[t] + args.gamma * \
+                        nextvalues * nextnonterminal - values[t]
+                    advantages[t] = lastgaelam = delta + args.gamma * \
+                        args.gae_lambda * nextnonterminal * lastgaelam
                 returns = advantages + values
             else:
                 returns = torch.zeros_like(rewards).to(device)
@@ -262,7 +297,8 @@ def main():
                     else:
                         nextnonterminal = 1.0 - dones[t + 1]
                         next_return = returns[t + 1]
-                    returns[t] = rewards[t] + args.gamma * nextnonterminal * next_return
+                    returns[t] = rewards[t] + args.gamma * \
+                        nextnonterminal * next_return
                 advantages = returns - values
 
         # flatten the batch
@@ -281,7 +317,8 @@ def main():
         # Optimizing the policy and value network (learn!)
         b_inds = np.arange(args.batch_size)
         clipfracs = []
-        for epoch in range(args.update_epochs):  # update_epochs num of gradient updates
+        # update_epochs num of gradient updates
+        for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
@@ -289,7 +326,8 @@ def main():
 
                 mb_batch_obs = pyg.data.Batch.from_data_list(b_obs[mb_inds])
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(mb_batch_obs, b_actions.long()[mb_inds])
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
+                    mb_batch_obs, b_actions.long()[mb_inds])
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
@@ -297,15 +335,18 @@ def main():
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
+                    clipfracs += [((ratio - 1.0).abs() >
+                                   args.clip_coef).float().mean().item()]
 
                 mb_advantages = b_advantages[mb_inds]
                 if args.norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                    mb_advantages = (
+                        mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
                 # Policy loss
                 pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+                pg_loss2 = -mb_advantages * \
+                    torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # Value loss
@@ -321,14 +362,16 @@ def main():
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
                     v_loss = 0.5 * v_loss_max.mean()
                 else:
-                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                    v_loss = 0.5 * \
+                        ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                nn.utils.clip_grad_norm_(
+                    agent.parameters(), args.max_grad_norm)
                 optimizer.step()
 
             if args.target_kl is not None:
@@ -337,19 +380,24 @@ def main():
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+        explained_var = np.nan if var_y == 0 else 1 - \
+            np.var(y_true - y_pred) / var_y
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("charts/learning_rate",
+                          optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
+        writer.add_scalar("losses/old_approx_kl",
+                          old_approx_kl.item(), global_step)
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        writer.add_scalar("losses/explained_variance",
+                          explained_var, global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("charts/SPS", int(global_step /
+                          (time.time() - start_time)), global_step)
 
     envs.close()
     writer.close()

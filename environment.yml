@@ -1,0 +1,19 @@
+name: omelette
+channels:
+  - pyg
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.9
+  - numpy
+  - pandas
+  - pytorch
+  - torchvision
+  - torchaudio
+  - cudatoolkit=10.2
+  - pyg
+  - pytorch-lightning
+  - maturin
+  - captum
+  - gym
+  - torchmetrics
