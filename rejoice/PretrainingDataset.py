@@ -10,7 +10,7 @@ class PretrainingDataset(Dataset):
     def __init__(self, lang: Language, root: str, transform=None, pre_transform=None):
         super().__init__(root, transform, pre_transform)
         self.root_dir = root
-        self.feature_names = lang.feature_names()
+        self.feature_names = lang.feature_names
 
     @property
     def raw_file_names(self):

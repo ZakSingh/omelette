@@ -1,12 +1,12 @@
 use egg::*;
 use once_cell::sync::Lazy;
 
+use log::{debug, error, info, log_enabled, Level};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::{borrow::Cow, fmt::Display, hash::Hash, time::Duration};
-use log::{debug, error, log_enabled, info, Level};
 
 use pyo3::AsPyPointer;
 use pyo3::{
@@ -14,7 +14,6 @@ use pyo3::{
     prelude::*,
     types::{PyList, PyString, PyTuple, PyType},
 };
-
 
 fn py_eq(a: &PyAny, b: impl ToPyObject) -> bool {
     a.rich_compare(b, CompareOp::Eq)
@@ -252,8 +251,7 @@ impl Rewrite {
     }
 }
 
-#[derive(Default)]
-#[derive(Clone)]
+#[derive(Default, Clone)]
 struct PyAnalysis {
     eval: Option<PyObject>,
 }
@@ -369,7 +367,7 @@ impl EGraph {
 
     fn clone(&mut self) -> EGraph {
         Self {
-            egraph: self.egraph.clone()
+            egraph: self.egraph.clone(),
         }
     }
 
@@ -377,14 +375,19 @@ impl EGraph {
         self.egraph.dot().to_png(path).unwrap()
     }
 
-    #[args(iter_limit = "10", time_limit = "10.0", node_limit = "100_000", use_backoff="false")]
+    #[args(
+        iter_limit = "10",
+        time_limit = "10.0",
+        node_limit = "100_000",
+        use_backoff = "false"
+    )]
     fn run(
         &mut self,
         rewrites: &PyList,
         iter_limit: usize,
         time_limit: f64,
         node_limit: usize,
-        use_backoff: bool
+        use_backoff: bool,
     ) -> PyResult<&str> {
         let refs = rewrites
             .iter()
@@ -422,8 +425,8 @@ impl EGraph {
                 } else {
                     Ok("TIME_LIMIT")
                 }
-            },
-            StopReason::Other(_) => Ok("OTHER")
+            }
+            StopReason::Other(_) => Ok("OTHER"),
         }
     }
 
@@ -471,7 +474,32 @@ impl EGraph {
         let eg = &self.egraph;
         let mut ids: Vec<String> = eg.classes().map(|c| c.id.to_string()).collect();
         ids.sort();
-        return ids
+        return ids;
+    }
+
+    fn match_rules(&mut self, py: Python, rewrites: &PyList) -> PyObject {
+        // Search for each rewrite rule. Return a dict of "rule_name": [eclass_ids] for each
+        let refs = rewrites
+            .iter()
+            .map(FromPyObject::extract)
+            .collect::<PyResult<Vec<PyRef<Rewrite>>>>()
+            .unwrap();
+
+        let matches: HashMap<&str, Vec<String>> = refs
+            .iter()
+            .map(|r| &r.rewrite)
+            .map(|rw| {
+                (
+                    rw.name.as_str(),
+                    rw.search(&self.egraph)
+                        .into_iter()
+                        .map(|m| m.eclass.to_string())
+                        .collect(),
+                )
+            })
+            .collect();
+
+        matches.to_object(py)
     }
 }
 

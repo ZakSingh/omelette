@@ -36,7 +36,7 @@ def parse_args():
 
     parser.add_argument("--print-actions", type=bool, default=False,
                         help="print the (action, reward) tuples that make up each episode")
-    parser.add_argument("--pretrain", type=bool, default=True,
+    parser.add_argument("--load-pretrained-weights", type=bool, default=True,
                         help="Whether or not to pretrain the value and policy networks")
     parser.add_argument("--lang", type=str, default="PROP",
                         help="The language to use. One of PROP, MATH, TENSOR.")

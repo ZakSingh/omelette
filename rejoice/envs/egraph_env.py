@@ -21,7 +21,7 @@ class EGraphEnv(gym.Env):
         self.expr = expr
         self.orig_expr = expr
         self.rewrite_rules = lang.rewrite_rules()
-        self.action_space = spaces.Discrete(lang.num_actions + 1)
+        self.action_space = spaces.Discrete(lang.num_rules + 1)
         self.observation_space = GraphSpace(num_node_features=lang.num_node_features,
                                             low=0,
                                             high=lang.get_feature_upper_bounds())
@@ -32,7 +32,7 @@ class EGraphEnv(gym.Env):
     def step(self, action: any) -> Tuple[any, float, bool, dict]:
         info = {"actual_cost": self.prev_cost}
 
-        is_stop_action = action == self.lang.num_actions
+        is_stop_action = action == self.lang.num_rules
         if is_stop_action:
             # Agent has chosen to stop optimizing and terminate current episode
             # punish agent if it ends the episode without any improvement

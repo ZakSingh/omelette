@@ -3,7 +3,7 @@ import functools
 # from .rejoice import *
 from rejoice import *
 from typing import Protocol, Union, NamedTuple
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 from rejoice.util import BytesIntEncoder
 import torch
 import torch_geometric as geom
@@ -13,6 +13,7 @@ import numpy as np
 import torch_geometric.transforms as T
 import time
 import sys
+import string
 
 # needed for safe expression generation
 sys.setrecursionlimit(10**5)
@@ -27,6 +28,10 @@ class Language(Protocol):
     """A base Language for an equality saturation task. This will be passed to egg."""
 
     num_static_features = 4
+
+    def get_supported_datatypes(self):
+        # ["symbols", "integers"]
+        return ["symbols"]
 
     @property
     def name(self):
@@ -45,10 +50,6 @@ class Language(Protocol):
     def all_operators(self) -> "list[tuple]":
         ...
 
-    @property
-    def num_actions(self) -> int:
-        return len(self.all_rules())
-
     def all_operators_obj(self):
         op_dict = self.all_operators_dict()
         return ObjectView(op_dict)
@@ -64,6 +65,14 @@ class Language(Protocol):
     def get_terminals(self) -> "list":
         ...
 
+    @functools.cached_property
+    def num_terminals(self):
+        return len(self.get_terminals())
+
+    @functools.cached_property
+    def num_operators(self):
+        return len(self.all_operators())
+
     def rewrite_rules(self):
         rules = list()
         for rl in self.all_rules():
@@ -75,12 +84,15 @@ class Language(Protocol):
 
     @property
     def num_node_features(self) -> int:
-        return self.num_static_features + len(self.get_terminals()) + len(self.all_operators())
+        return self.num_static_features + self.num_terminals + self.num_operators + self.num_rules
 
     def get_feature_upper_bounds(self):
+        return np.array(([1] * self.num_static_features) +
+                        ([1] * self.num_terminals) +
+                        ([1] * self.num_operators) +
+                        ([1] * self.num_rules))
 
-        return np.array(([1] * self.num_static_features) + ([1] * len(self.get_terminals())) + ([1] * len(self.all_operators())))
-
+    @functools.cached_property
     def feature_names(self):
         features = ["is_eclass",
                     "is_enode",
@@ -88,20 +100,8 @@ class Language(Protocol):
                     "is_terminal"]
         terminal_names = [str(t) for t in self.get_terminals()]
         op_names = [op.__name__ for op in self.all_operators()]
-        return features + terminal_names + op_names
-
-    def decode_node(self, node: torch.Tensor):
-        dnode = {"type": "eclass" if node[0] == 1 else "enode",
-                 "is_scalar": bool(node[2]),
-                 "is_terminal": bool(node[3]), }
-        # if it's an enode op, find its op type
-        if node[1] == 1 and node[2] == 0 and node[3] == 0:
-            all_ops = self.all_operators()
-            op_ind = torch.argmax(torch.Tensor(
-                node[self.num_static_features + len(self.get_terminals()):])).item()
-            op = all_ops[op_ind]
-            dnode["op"] = op.__name__
-        return dnode
+        rule_names = [rule[0] for rule in self.all_rules()]
+        return features + terminal_names + op_names + rule_names
 
     @functools.cached_property
     def op_to_ind(self):
@@ -117,7 +117,12 @@ class Language(Protocol):
         children = []
         for i in range(len(root._fields)):
             if np.random.uniform(0, 1) < p_leaf:
-                children.append(np.random.randint(0, 2))
+                if np.random.uniform(0, 1) < 0.5:
+                    children.append(np.random.choice(self.get_terminals()))
+                else:
+                    if "symbols" in self.get_supported_datatypes():
+                        symbols = list(string.ascii_lowercase)
+                        children.append(np.random.choice(symbols))
             else:
                 chosen_op = np.random.choice(ops)
                 op_children = []
@@ -126,7 +131,27 @@ class Language(Protocol):
                 children.append(chosen_op(*op_children))
         return root(*children)
 
+    @functools.cached_property
+    def num_rules(self):
+        return len(self.all_rules())
+
+    def rule_name_to_ind(self, rname: str) -> int:
+        rl_names = [rl[0] for rl in self.all_rules()]
+        return rl_names.index(rname)
+
+    def matches_to_lookup(self, eclass_ids: "list[str]", matches):
+        # restructure the dict
+        eclass_lookup = {k: [0]*self.num_rules for k in eclass_ids}
+
+        for rule, ecids in matches.items():
+            for ecid in ecids:
+                eclass_lookup[ecid][self.rule_name_to_ind(rule)] = 1
+
+        return eclass_lookup
+
     def encode_egraph(self, egraph: EGraph, y=None) -> geom.data.Data:
+        # dict of [rw_rule, [eclass_id]]
+
         # first_stamp = int(round(time.time() * 1000))
         num_enodes = egraph.num_enodes()
         eclass_ids = egraph.eclass_ids()
@@ -145,8 +170,19 @@ class Language(Protocol):
         all_node_edges = []
         # print("enodes", num_enodes, "eclasses", num_eclasses)
 
+        term_start = self.num_static_features
+        op_start = term_start + self.num_terminals
+        rule_start = op_start + self.num_operators
+
+        matches = egraph.match_rules(self.rewrite_rules())
+        eclass_to_rule_inds = self.matches_to_lookup(eclass_ids, matches)
+
         for eclass_id, (data, nodes) in classes.items():
             eclass_ind = eclass_to_ind[eclass_id]
+
+            x[eclass_ind][rule_start:] = torch.Tensor(
+                eclass_to_rule_inds[eclass_id])
+
             num_eclass_nodes = len(nodes)
             # create edges from eclass to member enodes
             enode_eclass_edges[0, edge_curr:(
@@ -157,18 +193,17 @@ class Language(Protocol):
 
             for node in nodes:
                 # we only want to encode if they're terminals... everything else will cause learning confusion.
-                if isinstance(node, int) or isinstance(node, float) or isinstance(node, bool) or isinstance(node, str):
+                if isinstance(node, int) or isinstance(node, float) or isinstance(node, bool) or isinstance(node, str) or isinstance(node, np.bool_):
                     try:
                         term_ind = self.get_terminals().index(node)
                         x[curr, 3] = 1
-                        x[curr, self.num_static_features + term_ind] = 1
+                        x[curr, term_start + term_ind] = 1
                     except ValueError:
                         # it's an unknown scalar (not in terminals list)
                         x[curr, 2] = 1
                 else:
                     # encode operator type
-                    x[curr, self.num_static_features +
-                        len(self.get_terminals()) + self.op_to_ind[type(node)]] = 1
+                    x[curr, op_start + self.op_to_ind[type(node)]] = 1
                     # connect to child eclasses
                     if isinstance(node, tuple):
                         all_node_edges.append(torch.stack([torch.full([len(node)], curr),
@@ -185,25 +220,51 @@ class Language(Protocol):
         # print("time_taken", time_taken, data)
         return data
 
+    def decode_node(self, node: torch.Tensor):
+        term_start = self.num_static_features
+        op_start = term_start + self.num_terminals
+        rule_start = op_start + self.num_operators
+
+        is_eclass = bool(node[0])
+        is_operator = bool(node[1])
+        is_scalar = bool(node[2])
+        is_terminal = bool(node[3])
+
+        node_data = {}
+        if is_eclass:
+            node_data["name"] = "eclass"
+            node_data["value"] = [f for ind, f in enumerate(
+                self.feature_names[rule_start:]) if node[rule_start + ind] == 1]
+        elif is_terminal:
+            node_data["name"] = "terminal"
+            node_data["value"] = [f for ind, f in enumerate(
+                self.feature_names[term_start:op_start]) if node[term_start + ind] == 1]
+        elif is_scalar:
+            node_data["name"] = "scalar"
+            node_data["value"] = "?"
+        elif is_operator:
+            node_data["name"] = "operator"
+            node_data["value"] = [f for ind, f in enumerate(
+                self.feature_names[op_start:rule_start]) if node[op_start + ind] == 1]
+
+        return node_data
+
     def viz_egraph(self, data):
         """Vizualize a PyTorch Geometric data object containing an egraph."""
+        print("vizualizing egraph", data)
         g = geom.utils.to_networkx(data, node_attrs=['x'])
 
         for u, data in g.nodes(data=True):
             decoded = self.decode_node(data["x"])
-            if decoded["type"] == "eclass":
-                data['name'] = "eclass"
-            elif decoded["is_scalar"]:
-                data['name'] = decoded["value"]
-            else:
-                data["name"] = decoded["op"]
+            data["name"] = decoded["name"]
+            data["value"] = decoded["value"]
             del data['x']
 
         node_labels = {}
         for u, data in g.nodes(data=True):
-            node_labels[u] = data['name']
+            node_labels[u] = data['name'] + str(data["value"])
 
         pos = nx.nx_agraph.graphviz_layout(g, prog="dot")
         nx.draw(g, labels=node_labels, pos=pos)
-        plt.show()
+        plt.savefig("./test_eg.png")
         return g

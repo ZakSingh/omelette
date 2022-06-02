@@ -1,22 +1,16 @@
-from graph_space import GraphSpace
-from PretrainingDataset import PretrainingDataset
+from .PretrainingDataset import PretrainingDataset
 import os
 import time
 import torch
-from tests.test_lang import TestLang
-from rejoice import EGraph
-from lib import Language
+from .rejoice import EGraph
+from .lib import Language
 import numpy as np
 import sys
 from pathlib import Path
 import itertools
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-seed = 1
-np.random.seed(seed)
 
 
 class EGraphSolver:
-    """The goal is"""
 
     def __init__(self, lang: Language, expr: any, node_limit=10_000):
         self.lang = lang
@@ -86,7 +80,7 @@ class EGraphSolver:
 
     def exhaustive_search(self, iter_limit=7):
         egraph = self.new_egraph()
-        egraph.run(lang.rewrite_rules(), iter_limit=iter_limit,
+        egraph.run(self.lang.rewrite_rules(), iter_limit=iter_limit,
                    node_limit=self.node_limit, use_backoff=True)
         best_cost, best_expr = egraph.extract(self.expr)
         return best_cost, best_expr
@@ -98,18 +92,14 @@ class EGraphSolver:
 
 
 def generate_dataset(lang: Language, num=10):
-    exprs = [lang.gen_expr() for i in range(num)]
+    exprs = [lang.gen_expr(p_leaf=0.1) for i in range(num)]
 
     for ind, expr in enumerate(exprs):
-        print("Generating expr", ind)
+        print("Generating expr", ind, expr)
         solver = EGraphSolver(lang, expr)
         try:
             solver.optimize()
-        except:
+        except Exception as e:
+            print("Failed to solve expr", ind, expr)
+            print(e)
             continue
-
-
-if __name__ == "__main__":
-    lang = TestLang()
-    dataset = PretrainingDataset(lang=lang, root=lang.name)
-    generate_dataset(lang, 10000)
