@@ -4,7 +4,7 @@ from PropLang import PropLang
 
 from pytorch_lightning.plugins import SingleDevicePlugin, DDPSpawnPlugin
 
-from ppo import PPOAgent
+from ppo import PPOAgent, get_lang_from_str
 from rejoice.pretrain_dataset_gen import generate_dataset
 import torch_geometric as pyg
 from rejoice.PretrainingDataset import PretrainingDataset
@@ -15,6 +15,9 @@ import torch.optim as optim
 import os
 import torchmetrics
 import torch
+from multiprocessing import Pool
+from itertools import repeat
+import numpy as np
 
 
 def parse_args():
@@ -27,8 +30,14 @@ def parse_args():
                         help="the number of node features for input graphs")
     parser.add_argument("--count", type=int, default=100_000,
                         help="the number of expressions to generate")
-    parser.add_argument("-data_root", type=str, default="./PropLang",
+    parser.add_argument("--num-threads", type=int, default=2,
+                        help="the number of threads to spawn")
+    parser.add_argument("--seed", type=int, default=np.random.randint(1, 99999),
+                        help="the random seed used for generation")
+    parser.add_argument("--data_root", type=str, default="./PropLang",
                         help="Root directory for data")
+    parser.add_argument("--lang", type=str, default="PROP",
+                        help="The language name to execute")
     args = parser.parse_args()
     return args
 
@@ -57,6 +66,9 @@ class PretrainModule(pl.LightningModule):
         self.loss_module = nn.CrossEntropyLoss()
 
     def forward(self, data):
+        print(data)
+        print(data.x)
+        print(data.y)
         x = self.model(data)
         loss = self.loss_module(input=x, target=data.y)
         acc = self.accuracy(x, data.y)
@@ -82,28 +94,25 @@ class PretrainModule(pl.LightningModule):
         self.log("acc/test_acc", acc, batch_size=self.batch_size)
 
 
-def main():
-    args = parse_args()
-    lang = PropLang()
-
-    if args.generate:
-        generate_dataset(lang, num=args.count)
-
+def train(lang_name: str, data_root: str):
+    lang = get_lang_from_str(lang_name)
     envs_mock = Struct(**{
         "single_observation_space": Struct(**{
-            "num_node_features": lang.num_node_features  # args.num_node_features
+            "num_node_features": lang.num_node_features
         }),
         "single_action_space": Struct(**{
             "n": lang.num_rules + 1  # args.num_actions
         })
     })
 
-    batch_size = 32
+    batch_size = 1
 
     agent = PPOAgent(envs=envs_mock)
     model = PretrainModule(copy.deepcopy(agent.actor), batch_size=batch_size)
-    dataset = PretrainingDataset(lang=lang, root=args.data_root)
+    dataset = PretrainingDataset(lang=lang, root=data_root)
     train_data, val_data, test_data = split_dataset(dataset)
+    print("number of train itesm", len(train_data))
+    print("number of val itesm", len(val_data))
 
     pyg_lightning_dataset = pyg.data.LightningDataset(train_dataset=train_data,
                                                       val_dataset=val_data,
@@ -119,6 +128,27 @@ def main():
                          max_epochs=5_000)
     trainer.fit(model, pyg_lightning_dataset)
     torch.save(model.model.state_dict(), "./weights.pt")
+
+
+def gen(x):
+    count, lang_name, seed = x
+    np.random.seed(seed)
+
+    rng = np.random.default_rng(seed)
+    lang = get_lang_from_str(lang_name)
+    generate_dataset(lang, num=count, rng=rng)
+
+
+def main():
+    args = parse_args()
+    if args.generate:
+        print("initializing with seed", args.seed)
+        pool = Pool(processes=args.num_threads)
+        t = [(int(args.count / args.num_threads), args.lang, args.seed + i)
+             for i in range(args.count)]
+        pool.map(gen, t)
+
+    train(args.lang, args.data_root)
 
 
 if __name__ == "__main__":

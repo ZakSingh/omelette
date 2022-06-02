@@ -150,8 +150,6 @@ class Language(Protocol):
         return eclass_lookup
 
     def encode_egraph(self, egraph: EGraph, y=None) -> geom.data.Data:
-        # dict of [rw_rule, [eclass_id]]
-
         # first_stamp = int(round(time.time() * 1000))
         num_enodes = egraph.num_enodes()
         eclass_ids = egraph.eclass_ids()
@@ -213,7 +211,12 @@ class Language(Protocol):
         edge_index = torch.concat(
             [enode_eclass_edges, *all_node_edges], dim=1).long()
         edge_index, _ = geom.utils.add_remaining_self_loops(edge_index)
-        data = geom.data.Data(x=x, edge_index=edge_index, y=y)
+
+        action_mask = x[:, rule_start:].sum(dim=0).clamp(0, 1)
+        action_mask = torch.cat((action_mask, torch.ones(1)))
+
+        data = geom.data.Data(x=x, edge_index=edge_index,
+                              y=y, action_mask=action_mask)
         # second_stamp = int(round(time.time() * 1000))
         # Calculate the time taken in milliseconds
         # time_taken = second_stamp - first_stamp

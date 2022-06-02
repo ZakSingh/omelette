@@ -12,11 +12,12 @@ import itertools
 
 class EGraphSolver:
 
-    def __init__(self, lang: Language, expr: any, node_limit=10_000):
+    def __init__(self, lang: Language, expr: any, node_limit=10_000, rng=np.random.default_rng()):
         self.lang = lang
         self.expr = expr
         self.rewrite_rules = lang.rewrite_rules()
         self.node_limit = node_limit
+        self.rng = rng
 
     def optimize(self, max_steps=500) -> "list[int]":
         best_possible_cost, best_possible_expr = self.exhaustive_search()
@@ -27,7 +28,7 @@ class EGraphSolver:
         steps = []
         for i in range(max_steps):
             action, stop_reason, cost = self.step(
-                egraph, np.random.randint(0, len(self.rewrite_rules)))
+                egraph, self.rng.integers(0, len(self.rewrite_rules)))
             if stop_reason == 'NODE_LIMIT':
                 print("hit node limit when searching...")
                 raise Exception
@@ -65,8 +66,10 @@ class EGraphSolver:
                 data, f'{lang_name}/{lang_name}_a{action}_n{len(data.x)}_e{len(data.edge_index[0])}_{time.strftime("%Y%m%d-%H%M%S")}.pt')
             egraph.run([self.lang.rewrite_rules()[action]],
                        iter_limit=1, node_limit=10_000)
+
         # Add termination action
-        data = self.lang.encode_egraph(egraph, self.lang.num_actions)
+        end_action_ind = self.lang.num_rules
+        data = self.lang.encode_egraph(egraph, end_action_ind)
         torch.save(
             data, f'{lang_name}/{lang_name}_a{action}_n{len(data.x)}_e{len(data.edge_index[0])}_{time.strftime("%Y%m%d-%H%M%S")}.pt')
 
@@ -91,7 +94,7 @@ class EGraphSolver:
         return egraph
 
 
-def generate_dataset(lang: Language, num=10):
+def generate_dataset(lang: Language, num=10, rng=np.random.default_rng()):
     exprs = [lang.gen_expr(p_leaf=0.1) for i in range(num)]
 
     for ind, expr in enumerate(exprs):

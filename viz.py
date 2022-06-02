@@ -16,7 +16,8 @@ class VizTests(unittest.TestCase):
         ops = self.lang.all_operators_dict()
         AND, NOT, OR, IM = ops["and"], ops["not"], ops["or"], ops["implies"]
         x, y, z = "x", "y", "z"
-        self.expr = AND(x, True)  # AND(IM(NOT(y), NOT(x)), IM(y, z))
+        # self.expr = AND(x, True)  # AND(IM(NOT(y), NOT(x)), IM(y, z))
+        self.expr = AND(IM(NOT(y), NOT(x)), IM(y, z))
         self.egraph = EGraph()
 
     # def test_node_feature_count(self):

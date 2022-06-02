@@ -50,7 +50,7 @@ def parse_args():
                         help="the maximum number of steps in any episode")
     parser.add_argument("--learning-rate", type=float, default=2.5e-5,
                         help="the learning rate of the optimizer")
-    parser.add_argument("--num-envs", type=int, default=8,
+    parser.add_argument("--num-envs", type=int, default=2,
                         help="the number of parallel game environments")
     parser.add_argument("--num-steps", type=int, default=256,
                         help="the number of steps to run in each environment per policy rollout")
@@ -112,7 +112,7 @@ def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang
             AND, NOT, OR, IM = ops["and"], ops["not"], ops["or"], ops["implies"]
             x, y, z = "x", "y", "z"
             expr = AND(IM(NOT(y), NOT(x)), IM(y, z))
-            run_egg(lang, expr)
+            # run_egg(lang, expr)
         elif lang_name == "MATH":
             expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
             expr = ops.mul(1, ops.add(
@@ -136,6 +136,31 @@ def get_lang_from_str(name: str) -> Language:
         return MathLang()
 
 
+class CategoricalMasked(Categorical):
+    def __init__(self, probs=None, logits=None, validate_args=None, mask=None, device=torch.device("cuda")):
+        self.mask = mask
+        self.device = device
+        if self.mask is None:
+            super(CategoricalMasked, self).__init__(
+                probs, logits, validate_args)
+        else:
+            self.mask = mask.type(torch.BoolTensor).to(device)
+            # make probabilities of invalid actions impossible
+            logits = torch.where(self.mask, logits,
+                                 torch.tensor(-1e+8).to(device))
+            super(CategoricalMasked, self).__init__(
+                probs, logits, validate_args)
+
+    def entropy(self):
+        if self.mask is None:
+            return super(CategoricalMasked, self).entropy()
+
+        p_log_p = self.logits * self.probs
+        p_log_p = torch.where(self.mask, p_log_p,
+                              torch.tensor(0.).to(self.device))
+        return -p_log_p.sum(-1)
+
+
 class PPOAgent(nn.Module):
     def __init__(self, envs: gym.vector.AsyncVectorEnv):
         super().__init__()
@@ -153,11 +178,18 @@ class PPOAgent(nn.Module):
     def get_value(self, x):
         return self.critic(x)
 
-    def get_action_and_value(self, x, action=None):
+    def get_action_and_value(self, x, action=None, invalid_action_mask=None):
         logits = self.actor(x)
-        probs = Categorical(logits=logits)
+
+        if invalid_action_mask is not None:
+            probs = CategoricalMasked(
+                logits=logits, mask=invalid_action_mask)
+        else:
+            probs = Categorical(logits=logits)
+
         if action is None:
             action = probs.sample()
+
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
 
 
@@ -190,7 +222,7 @@ def main():
 
     assert isinstance(envs.single_action_space,
                       gym.spaces.Discrete), "only discrete action space is supported"
-    action_names = [r[0] for r in lang.all_rules()] + ["end", "rebase"]
+    action_names = [r[0] for r in lang.all_rules()] + ["end"]  # + ["rebase"]
 
     agent = PPOAgent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -203,7 +235,8 @@ def main():
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-
+    invalid_action_masks = torch.zeros((args.num_steps, args.num_envs) +
+                                       (envs.single_action_space.n,)).to(device)
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
@@ -224,13 +257,15 @@ def main():
             global_step += 1 * args.num_envs
             # add the batch of 4 env observations to the obs list at index step
             obs[step] = next_obs
-            # obs.append(next_obs)
             dones[step] = next_done
+
+            invalid_action_masks[step] = next_obs.action_mask.reshape(
+                (args.num_envs, envs.single_action_space.n))
 
             # log the action, logprob, and value for this step into our data storage
             with torch.no_grad():  # no grad b/c we're just rolling out, not training
                 action, logprob, _, value = agent.get_action_and_value(
-                    next_obs)
+                    next_obs, invalid_action_mask=invalid_action_masks[step])
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -269,6 +304,7 @@ def main():
                         ep_a_r = list(zip(ep_actions, ep_rewards))
                         print(ep_a_r)
                     break
+
         # Remember that actions is (n_steps, n_envs, n_actions)
         # bootstrap value if not done
         with torch.no_grad():
