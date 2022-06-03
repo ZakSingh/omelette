@@ -23,11 +23,13 @@ class EGraphEnv(gym.Env):
         self.rewrite_rules = lang.rewrite_rules()
         self.action_space = spaces.Discrete(lang.num_rules + 1)
         self.observation_space = GraphSpace(num_node_features=lang.num_node_features,
+                                            dtype=np.int8,
                                             low=0,
                                             high=lang.get_feature_upper_bounds())
         self.reward_range = (-1, 1)
         self.node_limit = node_limit
         self.egraph, self.max_cost, self.prev_cost = None, None, None
+        self.is_first_step = True
 
     def step(self, action: any) -> Tuple[any, float, bool, dict]:
         info = {"actual_cost": self.prev_cost}
@@ -36,7 +38,8 @@ class EGraphEnv(gym.Env):
         if is_stop_action:
             # Agent has chosen to stop optimizing and terminate current episode
             # punish agent if it ends the episode without any improvement
-            reward = -1.0 if self.prev_cost == self.max_cost else 0.0
+            # reward = -1.0 if self.prev_cost == self.max_cost else 0.0
+            reward = -1.0 if self.is_first_step else 0.0
             # TODO: should the next obs be None or still the current state?
             # return self._get_obs(), reward, True, info
             return None, reward, True, info
@@ -71,7 +74,7 @@ class EGraphEnv(gym.Env):
         info["stop_reason"] = stop_reason
         if stop_reason == 'SATURATED':
             # if it was saturated, applying the rule did nothing; no need to re-extract
-            reward = -0.5
+            reward = -0.1
         elif stop_reason == 'NODE_LIMIT' or stop_reason == 'TIME_LIMIT':
             reward = -1.0
         else:
@@ -80,19 +83,20 @@ class EGraphEnv(gym.Env):
             info["actual_cost"] = best_cost
             if best_cost == self.prev_cost:
                 # expanded egraph, but didn't get us a better extraction cost
-                reward = -0.05
+                reward = -0.01
             else:
                 reward = (self.prev_cost - best_cost) / self.max_cost
                 self.prev_cost = best_cost
-            if stop_reason != "ITERATION_LIMIT":
-                reward -= 1.0  # punish for timing out
 
         is_done = is_terminal(stop_reason)
         if stop_reason != "NODE_LIMIT":
             new_obs = self._get_obs()
+            info["actions_available"] = sum(new_obs.action_mask)
         else:
             print("NODE LIMIT!!!")
             new_obs = None
+
+        self.is_first_step = False
 
         return new_obs, reward, is_done, info
 
@@ -108,9 +112,16 @@ class EGraphEnv(gym.Env):
         self.egraph.add(self.expr)
         self.max_cost = float(self.egraph.extract(self.expr)[0])
         self.prev_cost = self.max_cost
+        self.is_first_step = True
         # reward is normalized to (0, max_cost)
         new_obs = self._get_obs()
-        return new_obs
+        info = {}
+        info = {"actual_cost": self.prev_cost}
+        info["actions_available"] = sum(new_obs.action_mask)
+        if return_info:
+            return new_obs, info
+        else:
+            return new_obs
 
     def _get_obs(self):
         return self.lang.encode_egraph(self.egraph)

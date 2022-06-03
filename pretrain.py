@@ -18,6 +18,7 @@ import torch
 from multiprocessing import Pool
 from itertools import repeat
 import numpy as np
+import concurrent.futures
 
 
 def parse_args():
@@ -57,26 +58,24 @@ class Struct:
 
 
 class PretrainModule(pl.LightningModule):
-    def __init__(self, model, batch_size: int):
+    def __init__(self, model, batch_size: int, learning_rate=1e-4):
         super().__init__()
         # self.save_hyperparameters()
         self.batch_size = batch_size
+        self.learning_rate = learning_rate
         self.model = model
         self.accuracy = torchmetrics.Accuracy()
         self.loss_module = nn.CrossEntropyLoss()
 
     def forward(self, data):
-        print(data)
-        print(data.x)
-        print(data.y)
         x = self.model(data)
         loss = self.loss_module(input=x, target=data.y)
         acc = self.accuracy(x, data.y)
         return loss, acc
 
     def configure_optimizers(self):
-        # High lr because of small dataset and small model
-        optimizer = optim.AdamW(self.parameters(), lr=1e-3, weight_decay=0.0)
+        optimizer = optim.Adam(
+            self.parameters(), lr=self.learning_rate)
         return optimizer
 
     def training_step(self, batch, batch_idx):
@@ -101,18 +100,17 @@ def train(lang_name: str, data_root: str):
             "num_node_features": lang.num_node_features
         }),
         "single_action_space": Struct(**{
-            "n": lang.num_rules + 1  # args.num_actions
+            "n": lang.num_rules + 1
         })
     })
 
-    batch_size = 1
+    batch_size = 32
 
-    agent = PPOAgent(envs=envs_mock)
-    model = PretrainModule(copy.deepcopy(agent.actor), batch_size=batch_size)
+    agent = PPOAgent(envs=envs_mock, use_dropout=True)
+    model = PretrainModule(copy.deepcopy(agent.actor),
+                           batch_size=batch_size, learning_rate=1e-4)
     dataset = PretrainingDataset(lang=lang, root=data_root)
     train_data, val_data, test_data = split_dataset(dataset)
-    print("number of train itesm", len(train_data))
-    print("number of val itesm", len(val_data))
 
     pyg_lightning_dataset = pyg.data.LightningDataset(train_dataset=train_data,
                                                       val_dataset=val_data,
@@ -122,10 +120,13 @@ def train(lang_name: str, data_root: str):
                                                       )
 
     trainer = pl.Trainer(strategy=DDPSpawnPlugin(find_unused_parameters=False),
-                         log_every_n_steps=5,
+                         log_every_n_steps=10,
+                         precision=16,
                          accelerator='gpu',
+                         gradient_clip_val=0.5,
                          devices=1,
-                         max_epochs=5_000)
+                         check_val_every_n_epoch=10,
+                         max_epochs=100_000)
     trainer.fit(model, pyg_lightning_dataset)
     torch.save(model.model.state_dict(), "./weights.pt")
 
@@ -143,10 +144,11 @@ def main():
     args = parse_args()
     if args.generate:
         print("initializing with seed", args.seed)
-        pool = Pool(processes=args.num_threads)
-        t = [(int(args.count / args.num_threads), args.lang, args.seed + i)
-             for i in range(args.count)]
-        pool.map(gen, t)
+
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            t = [(int(args.count / args.num_threads), args.lang, args.seed + i)
+                 for i in range(args.count)]
+            executor.map(gen, t)
 
     train(args.lang, args.data_root)
 

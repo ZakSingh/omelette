@@ -36,23 +36,27 @@ def parse_args():
 
     parser.add_argument("--print-actions", type=bool, default=False,
                         help="print the (action, reward) tuples that make up each episode")
-    parser.add_argument("--load-pretrained-weights", type=bool, default=True,
+    parser.add_argument("--pretrained-weights-path", type=str, default=None,
                         help="Whether or not to pretrain the value and policy networks")
     parser.add_argument("--lang", type=str, default="PROP",
                         help="The language to use. One of PROP, MATH, TENSOR.")
+    parser.add_argument("--use-action-mask", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
+                        help="if toggled, action masking is enabled")
+    parser.add_argument("--use-edge-attr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
+                        help="if toggled, edge attributes")
 
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="egraph-v0",
                         help="the id of the environment")
     parser.add_argument("--total-timesteps", type=int, default=2_000_000,  # 2_000_000,
                         help="total timesteps of the experiments")
-    parser.add_argument("--max-episode-steps", type=int, default=100,
+    parser.add_argument("--max-episode-steps", type=int, default=10,
                         help="the maximum number of steps in any episode")
-    parser.add_argument("--learning-rate", type=float, default=2.5e-5,
+    parser.add_argument("--learning-rate", type=float, default=2.5e-4,
                         help="the learning rate of the optimizer")
-    parser.add_argument("--num-envs", type=int, default=2,
+    parser.add_argument("--num-envs", type=int, default=16,  # 8,
                         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=256,
+    parser.add_argument("--num-steps", type=int, default=128,  # 256,
                         help="the number of steps to run in each environment per policy rollout")
 
     # Below - these shouldn't be changed much.
@@ -111,8 +115,11 @@ def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang
         if lang_name == "PROP":
             AND, NOT, OR, IM = ops["and"], ops["not"], ops["or"], ops["implies"]
             x, y, z = "x", "y", "z"
-            expr = AND(IM(NOT(y), NOT(x)), IM(y, z))
+            expr = OR(AND(IM(NOT(y), NOT(x)), IM(y, z)), NOT(IM(x, AND(y, z))))
+            # expr = AND(IM(NOT(y), NOT(x)), IM(y, z))
             # run_egg(lang, expr)
+
+            # expr = run_egg(lang, expr)
         elif lang_name == "MATH":
             expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
             expr = ops.mul(1, ops.add(
@@ -162,18 +169,29 @@ class CategoricalMasked(Categorical):
 
 
 class PPOAgent(nn.Module):
-    def __init__(self, envs: gym.vector.AsyncVectorEnv):
+    def __init__(self, envs: gym.vector.AsyncVectorEnv, weights_path=None, use_dropout=False, use_edge_attr=True):
         super().__init__()
+        print("use_edge_attr", use_edge_attr, "use_dropout", use_dropout)
         self.critic = GATNetwork(num_node_features=envs.single_observation_space.num_node_features,
                                  n_actions=1,
                                  n_layers=3,
                                  hidden_size=128,
+                                 dropout=(0.2 if use_dropout else 0.0),
+                                 use_edge_attr=use_edge_attr,
                                  out_std=1.)
         self.actor = GATNetwork(num_node_features=envs.single_observation_space.num_node_features,
                                 n_actions=envs.single_action_space.n,
                                 n_layers=3,
                                 hidden_size=128,
+                                dropout=(0.2 if use_dropout else 0.0),
+                                use_edge_attr=use_edge_attr,
                                 out_std=0.01)  # make probability of each action similar to start with
+        # self.actor.load_state_dict(torch.load(weights_path))
+        # keys_vin = torch.load(weights_path)
+        # current_model = self.critic.state_dict()
+        # new_state_dict = {k: v if v.size() == current_model[k].size() else current_model[k] for k, v in zip(
+        #     current_model.keys(), keys_vin.values())}
+        # self.critic.load_state_dict(new_state_dict, strict=False)
 
     def get_value(self, x):
         return self.critic(x)
@@ -224,7 +242,8 @@ def main():
                       gym.spaces.Discrete), "only discrete action space is supported"
     action_names = [r[0] for r in lang.all_rules()] + ["end"]  # + ["rebase"]
 
-    agent = PPOAgent(envs).to(device)
+    agent = PPOAgent(
+        envs, weights_path=args.pretrained_weights_path, use_dropout=False, use_edge_attr=args.use_edge_attr).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -259,13 +278,18 @@ def main():
             obs[step] = next_obs
             dones[step] = next_done
 
-            invalid_action_masks[step] = next_obs.action_mask.reshape(
-                (args.num_envs, envs.single_action_space.n))
+            if args.use_action_mask:
+                invalid_action_masks[step] = next_obs.action_mask.reshape(
+                    (args.num_envs, envs.single_action_space.n))
 
             # log the action, logprob, and value for this step into our data storage
             with torch.no_grad():  # no grad b/c we're just rolling out, not training
-                action, logprob, _, value = agent.get_action_and_value(
-                    next_obs, invalid_action_mask=invalid_action_masks[step])
+                if args.use_action_mask:
+                    action, logprob, _, value = agent.get_action_and_value(
+                        next_obs, invalid_action_mask=invalid_action_masks[step])
+                else:
+                    action, logprob, _, value = agent.get_action_and_value(
+                        next_obs)
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -278,6 +302,9 @@ def main():
             next_obs = pyg.data.Batch.from_data_list(next_obs).to(device)
 
             for env_ind, item in enumerate(info):
+                if "actions_available" in item.keys():
+                    writer.add_scalar("charts/actions_available",
+                                      item["actions_available"], global_step)
                 if "episode" in item.keys():
                     writer.add_scalar("charts/episodic_return",
                                       item["episode"]["r"], global_step)
@@ -287,7 +314,9 @@ def main():
                                       item["actual_cost"], global_step)
                     print(
                         f"global_step={global_step}, episode_length={item['episode']['l']}, episodic_return={item['episode']['r']:.2f}, episodic_cost={item['actual_cost']}")
+
                     if args.print_actions:
+                        # TODO: clean this up
                         start = (step + 1) - item["episode"]["l"]
                         if start < 0:
                             # start of episode is at end of buffer

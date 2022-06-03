@@ -1,6 +1,5 @@
 import functools
 
-# from .rejoice import *
 from rejoice import *
 from typing import Protocol, Union, NamedTuple
 from collections import OrderedDict, namedtuple
@@ -154,7 +153,10 @@ class Language(Protocol):
         num_enodes = egraph.num_enodes()
         eclass_ids = egraph.eclass_ids()
         num_eclasses = len(eclass_ids)
-        enode_eclass_edges = torch.zeros([2, num_enodes])
+        eclass_enode_edges = torch.zeros([2, num_enodes])
+        eclass_enode_edge_attr = torch.tensor(
+            [1, 0]).expand(eclass_enode_edges.size()[-1], -1)
+
         x = torch.zeros([num_eclasses + num_enodes, self.num_node_features])
         x[:num_eclasses, 0] = 1  # make eclass nodes
         x[num_eclasses:, 1] = 1  # mark enodes
@@ -166,7 +168,6 @@ class Language(Protocol):
         classes = egraph.classes()
 
         all_node_edges = []
-        # print("enodes", num_enodes, "eclasses", num_eclasses)
 
         term_start = self.num_static_features
         op_start = term_start + self.num_terminals
@@ -183,9 +184,9 @@ class Language(Protocol):
 
             num_eclass_nodes = len(nodes)
             # create edges from eclass to member enodes
-            enode_eclass_edges[0, edge_curr:(
+            eclass_enode_edges[0, edge_curr:(
                 edge_curr + num_eclass_nodes)] = eclass_ind
-            enode_eclass_edges[1, edge_curr:(
+            eclass_enode_edges[1, edge_curr:(
                 edge_curr + num_eclass_nodes)] = torch.arange(curr, curr + num_eclass_nodes)
             edge_curr = edge_curr + num_eclass_nodes
 
@@ -209,13 +210,25 @@ class Language(Protocol):
                 curr += 1
 
         edge_index = torch.concat(
-            [enode_eclass_edges, *all_node_edges], dim=1).long()
-        edge_index, _ = geom.utils.add_remaining_self_loops(edge_index)
+            [eclass_enode_edges, *all_node_edges], dim=1).long()
+
+        enode_eclass_edge_attr = torch.Tensor(
+            [0, 1]).expand(torch.concat(all_node_edges, dim=1).size()[-1], -1)
+
+        edge_attr = torch.concat(
+            [eclass_enode_edge_attr, enode_eclass_edge_attr])
+
+        edge_index, edge_attr = geom.utils.add_remaining_self_loops(
+            edge_index, edge_attr, fill_value=0.)
 
         action_mask = x[:, rule_start:].sum(dim=0).clamp(0, 1)
         action_mask = torch.cat((action_mask, torch.ones(1)))
 
-        data = geom.data.Data(x=x, edge_index=edge_index,
+        if y is not None:
+            y = torch.tensor()
+            y = torch.Tensor([y]).long()
+
+        data = geom.data.Data(x=x, edge_index=edge_index, edge_attr=edge_attr,
                               y=y, action_mask=action_mask)
         # second_stamp = int(round(time.time() * 1000))
         # Calculate the time taken in milliseconds
