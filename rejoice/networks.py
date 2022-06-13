@@ -49,8 +49,12 @@ class GATNetwork(nn.Module):
                        v2=True,
                        edge_dim=(2 if self.use_edge_attr else None))
 
-        self.head = nn.Sequential(nn.Dropout(p=dropout), nn.Linear(hidden_size, hidden_size), nn.LeakyReLU(),
+        if dropout == 0.0:
+            self.head = nn.Sequential(nn.Dropout(p=dropout), nn.Linear(hidden_size, hidden_size), nn.LeakyReLU(),
                                   layer_init(nn.Linear(hidden_size, n_actions), std=out_std))
+        else:
+            self.head = nn.Sequential(nn.Dropout(p=dropout), nn.Linear(hidden_size, hidden_size), nn.LeakyReLU(),
+                                  nn.Linear(hidden_size, n_actions))
 
     def forward(self, data: Union[pyg.data.Data, pyg.data.Batch]):
         x = self.gnn(x=data.x, edge_index=data.edge_index,

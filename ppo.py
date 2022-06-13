@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument("--cuda", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
                         help="if toggled, cuda will be enabled by default")
 
+    # omelette-specific configuration
     parser.add_argument("--print-actions", type=bool, default=False,
                         help="print the (action, reward) tuples that make up each episode")
     parser.add_argument("--pretrained-weights-path", type=str, default=None,
@@ -43,15 +44,21 @@ def parse_args():
     parser.add_argument("--use-action-mask", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
                         help="if toggled, action masking is enabled")
     parser.add_argument("--use-edge-attr", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
-                        help="if toggled, edge attributes")
+                        help="if toggled, use edge attributes denoting difference between e-class member and e-node child edges")
+    parser.add_argument("--use-shrink-action", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
+                        help="if toggled, include the shrink-and-reexpand action in the action-space")
+    parser.add_argument("--node-limit", type=int, default=10_000,
+                        help="egraph node limit")
+    parser.add_argument("--num-egg-iter", type=int, default=7,
+                        help="number of iterations to run egg for")
+    parser.add_argument("--max-episode-steps", type=int, default=10,
+                        help="the maximum number of steps in any episode")
 
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="egraph-v0",
                         help="the id of the environment")
     parser.add_argument("--total-timesteps", type=int, default=2_000_000,  # 2_000_000,
                         help="total timesteps of the experiments")
-    parser.add_argument("--max-episode-steps", type=int, default=10,
-                        help="the maximum number of steps in any episode")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
                         help="the learning rate of the optimizer")
     parser.add_argument("--num-envs", type=int, default=16,  # 8,
@@ -86,19 +93,21 @@ def parse_args():
                         help="the maximum norm for the gradient clipping")
     parser.add_argument("--target-kl", type=float, default=None,
                         help="the target KL divergence threshold")
+
     args = parser.parse_args()
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     return args
 
 
-def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang_name: str):
+def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang_name: str, use_shrink_action: bool, node_limit: int, num_egg_iter: int):
     def run_egg(lang: Language, expr):
         print(f"running egg for env {idx}", "expr", expr)
         first_stamp = int(round(time.time() * 1000))
         egraph = EGraph()
         egraph.add(expr)
-        egraph.run(lang.rewrite_rules(), 3)
+        stop_reason, num_applications, num_enodes, num_eclasses = egraph.run(lang.rewrite_rules(), iter_limit=num_egg_iter, node_limit=node_limit)
+        print(stop_reason, "num_applications", num_applications, "num_enodes", num_enodes, "num_eclasses", num_eclasses)
         best_cost, best_expr = egraph.extract(expr)
         second_stamp = int(round(time.time() * 1000))
         # Calculate the time taken in milliseconds
@@ -110,23 +119,25 @@ def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang
     def thunk():
         # TODO: refactor so the lang and expr can be passed in
         lang = get_lang_from_str(lang_name)
-        ops = lang.all_operators_dict()
 
         if lang_name == "PROP":
+            ops = lang.all_operators_dict()
             AND, NOT, OR, IM = ops["and"], ops["not"], ops["or"], ops["implies"]
             x, y, z = "x", "y", "z"
-            expr = OR(AND(IM(NOT(y), NOT(x)), IM(y, z)), NOT(IM(x, AND(y, z))))
+            # expr = OR(AND(IM(NOT(y), NOT(x)), IM(y, z)), NOT(IM(x, AND(y, z))))
+            # expr = OR(AND(IM(y, x), IM(y, z)), IM(x, AND(y, z)))
+            expr = OR(AND(x, y), IM(x, z))
             # expr = AND(IM(NOT(y), NOT(x)), IM(y, z))
-            # run_egg(lang, expr)
-
-            # expr = run_egg(lang, expr)
         elif lang_name == "MATH":
-            expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
-            expr = ops.mul(1, ops.add(
-                7, ops.mul(ops.add(16, 2), ops.mul(4, 0))))
-        # if idx == 0:
-        #     run_egg(lang, expr)
-        env = gym.make(env_id, lang=lang, expr=expr)
+            ops = lang.all_operators_obj()
+            expr = ops.add(1, ops.add(2, ops.add(3, ops.add(4, ops.add(5, ops.add(6, 7))))))
+            # expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
+            # expr = ops.mul(1, ops.add(
+            #     7, ops.mul(ops.add(16, 2), ops.mul(4, 0))))
+        if idx == 0:
+            run_egg(lang, expr)
+
+        env = gym.make(env_id, lang=lang, expr=expr, use_shrink_action=use_shrink_action, node_limit=node_limit)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.seed(seed)
@@ -169,29 +180,31 @@ class CategoricalMasked(Categorical):
 
 
 class PPOAgent(nn.Module):
-    def __init__(self, envs: gym.vector.AsyncVectorEnv, weights_path=None, use_dropout=False, use_edge_attr=True):
+    def __init__(self, envs: gym.vector.AsyncVectorEnv, weights_path=None, use_dropout=False, use_edge_attr=True, use_shrink_action=True):
         super().__init__()
-        print("use_edge_attr", use_edge_attr, "use_dropout", use_dropout)
+        print("use_edge_attr", use_edge_attr, "use_dropout", use_dropout, "weights_path", weights_path)
         self.critic = GATNetwork(num_node_features=envs.single_observation_space.num_node_features,
                                  n_actions=1,
                                  n_layers=3,
                                  hidden_size=128,
-                                 dropout=(0.2 if use_dropout else 0.0),
+                                 dropout=(0.3 if use_dropout else 0.0),
                                  use_edge_attr=use_edge_attr,
                                  out_std=1.)
         self.actor = GATNetwork(num_node_features=envs.single_observation_space.num_node_features,
                                 n_actions=envs.single_action_space.n,
                                 n_layers=3,
                                 hidden_size=128,
-                                dropout=(0.2 if use_dropout else 0.0),
+                                dropout=(0.3 if use_dropout else 0.0),
                                 use_edge_attr=use_edge_attr,
                                 out_std=0.01)  # make probability of each action similar to start with
-        # self.actor.load_state_dict(torch.load(weights_path))
-        # keys_vin = torch.load(weights_path)
-        # current_model = self.critic.state_dict()
-        # new_state_dict = {k: v if v.size() == current_model[k].size() else current_model[k] for k, v in zip(
-        #     current_model.keys(), keys_vin.values())}
-        # self.critic.load_state_dict(new_state_dict, strict=False)
+
+        if weights_path is not None:
+            self.actor.load_state_dict(torch.load(weights_path))
+            keys_vin = torch.load(weights_path)
+            current_model = self.critic.state_dict()
+            new_state_dict = {k: v if v.size() == current_model[k].size() else current_model[k] for k, v in zip(
+                current_model.keys(), keys_vin.values())}
+            self.critic.load_state_dict(new_state_dict, strict=False)
 
     def get_value(self, x):
         return self.critic(x)
@@ -212,6 +225,7 @@ class PPOAgent(nn.Module):
 
 
 def main():
+    torch.cuda.empty_cache()
     args = parse_args()
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     writer = SummaryWriter(f"runs/{run_name}")
@@ -226,24 +240,26 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-    print(device)
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    print("lang", args.lang, "device:", device, "use_shrink", args.use_shrink_action)
     lang = get_lang_from_str(args.lang)
 
     # env setup
     envs = gym.vector.AsyncVectorEnv(
         [make_env(args.env_id, args.seed + i, i, run_name,
-                  args.max_episode_steps, args.lang) for i in range(args.num_envs)],
+                  args.max_episode_steps, lang_name=args.lang, use_shrink_action=args.use_shrink_action, node_limit=args.node_limit, num_egg_iter=args.num_egg_iter) for i in range(args.num_envs)],
         shared_memory=False
     )
 
     assert isinstance(envs.single_action_space,
                       gym.spaces.Discrete), "only discrete action space is supported"
-    action_names = [r[0] for r in lang.all_rules()] + ["end"]  # + ["rebase"]
+    action_names = [r[0] for r in lang.all_rules()] + ["end"]
+
+    if args.use_shrink_action:
+        action_names.append("shrink")
 
     agent = PPOAgent(
-        envs, weights_path=args.pretrained_weights_path, use_dropout=False, use_edge_attr=args.use_edge_attr).to(device)
+        envs, weights_path=args.pretrained_weights_path, use_dropout=False, use_edge_attr=args.use_edge_attr, use_shrink_action=args.use_shrink_action).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -256,6 +272,7 @@ def main():
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
     invalid_action_masks = torch.zeros((args.num_steps, args.num_envs) +
                                        (envs.single_action_space.n,)).to(device)
+
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
@@ -313,7 +330,7 @@ def main():
                     writer.add_scalar("charts/episodic_cost",
                                       item["actual_cost"], global_step)
                     print(
-                        f"global_step={global_step}, episode_length={item['episode']['l']}, episodic_return={item['episode']['r']:.2f}, episodic_cost={item['actual_cost']}")
+                        f"global_step={global_step:7}, episode_length={item['episode']['l']:3}, episodic_return={item['episode']['r']:5.2f}, episodic_cost={item['actual_cost']:5.2f}")
 
                     if args.print_actions:
                         # TODO: clean this up

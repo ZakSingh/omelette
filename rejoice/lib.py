@@ -122,6 +122,9 @@ class Language(Protocol):
                     if "symbols" in self.get_supported_datatypes():
                         symbols = list(string.ascii_lowercase)
                         children.append(np.random.choice(symbols))
+                    if "integers" in self.get_supported_datatypes():
+                        symbols = list(string.ascii_lowercase)
+                        children.append(np.random.randint(0, 999)) 
             else:
                 chosen_op = np.random.choice(ops)
                 op_children = []
@@ -148,7 +151,8 @@ class Language(Protocol):
 
         return eclass_lookup
 
-    def encode_egraph(self, egraph: EGraph, y=None) -> geom.data.Data:
+    def encode_egraph(self, egraph: EGraph, y=None, use_shrink_action=False) -> geom.data.Data:
+        egraph.rebuild()
         # first_stamp = int(round(time.time() * 1000))
         num_enodes = egraph.num_enodes()
         eclass_ids = egraph.eclass_ids()
@@ -222,10 +226,12 @@ class Language(Protocol):
             edge_index, edge_attr, fill_value=0.)
 
         action_mask = x[:, rule_start:].sum(dim=0).clamp(0, 1)
-        action_mask = torch.cat((action_mask, torch.ones(1)))
+        if use_shrink_action:
+            action_mask = torch.cat((action_mask, torch.ones(2)))
+        else:
+            action_mask = torch.cat((action_mask, torch.ones(1)))
 
         if y is not None:
-            y = torch.tensor()
             y = torch.Tensor([y]).long()
 
         data = geom.data.Data(x=x, edge_index=edge_index, edge_attr=edge_attr,

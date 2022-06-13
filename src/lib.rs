@@ -1,7 +1,7 @@
 use egg::*;
 use once_cell::sync::Lazy;
 
-use log::{debug, error, info, log_enabled, Level};
+// use log::{debug, error, info, log_enabled, Level};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -383,12 +383,13 @@ impl EGraph {
     )]
     fn run(
         &mut self,
+        py: Python,
         rewrites: &PyList,
         iter_limit: usize,
         time_limit: f64,
         node_limit: usize,
-        use_backoff: bool,
-    ) -> PyResult<&str> {
+        use_backoff: bool
+    ) -> PyResult<Vec<PyObject>> {
         let refs = rewrites
             .iter()
             .map(FromPyObject::extract)
@@ -399,39 +400,78 @@ impl EGraph {
         let runner = if use_backoff {
             scheduled_runner
                 .with_iter_limit(iter_limit)
-                .with_node_limit(node_limit) // node_limit)
+                .with_node_limit(node_limit) 
                 .with_time_limit(Duration::from_secs_f64(time_limit))
                 .with_egraph(egraph)
                 .run(refs.iter().map(|r| &r.rewrite))
         } else {
             scheduled_runner
                 .with_iter_limit(iter_limit)
-                .with_node_limit(node_limit) // node_limit)
+                .with_node_limit(node_limit) 
                 .with_time_limit(Duration::from_secs_f64(time_limit))
                 .with_egraph(egraph)
                 .with_scheduler(SimpleScheduler)
                 .run(refs.iter().map(|r| &r.rewrite))
         };
 
+        let num_applications: usize = runner
+            .iterations
+            .iter()
+            .map(|i| i.applied.values().sum::<usize>())
+            .sum();
+
+        let egraph_nodes: usize = runner.egraph.total_size(); 
+        let egraph_classes: usize = runner.egraph.number_of_classes();
         self.egraph = runner.egraph;
 
         match runner.stop_reason.unwrap() {
-            StopReason::IterationLimit(_) => Ok("ITERATION_LIMIT"),
-            StopReason::NodeLimit(_) => Ok("NODE_LIMIT"),
-            StopReason::Saturated => Ok("SATURATED"),
+            StopReason::IterationLimit(_) => Ok(vec![
+                "ITERATION_LIMIT".to_object(py),
+                num_applications.to_object(py),
+                egraph_nodes.to_object(py),
+                egraph_classes.to_object(py),
+            ]),
+            StopReason::NodeLimit(_) => Ok(vec![
+                "NODE_LIMIT".to_object(py),
+                num_applications.to_object(py),
+                egraph_nodes.to_object(py),
+                egraph_classes.to_object(py),
+            ]),
+            StopReason::Saturated => Ok(vec![
+                "SATURATED".to_object(py),
+                num_applications.to_object(py),
+                egraph_nodes.to_object(py),
+                egraph_classes.to_object(py),
+            ]),
             StopReason::TimeLimit(_) => {
-                if self.egraph.total_number_of_nodes() > node_limit {
-                    Ok("NODE_LIMIT")
+                if egraph_nodes > node_limit {
+                    Ok(vec![
+                        "NODE_LIMIT".to_object(py),
+                        num_applications.to_object(py),
+                        egraph_nodes.to_object(py),
+                        egraph_classes.to_object(py),
+                    ])
                 } else {
-                    Ok("TIME_LIMIT")
+                    Ok(vec![
+                        "TIME_LIMIT".to_object(py),
+                        num_applications.to_object(py),
+                        egraph_nodes.to_object(py),
+                        egraph_classes.to_object(py),
+                    ])
                 }
             }
-            StopReason::Other(_) => Ok("OTHER"),
+            StopReason::Other(_) => Ok(vec![
+                "OTHER".to_object(py),
+                num_applications.to_object(py),
+                egraph_nodes.to_object(py),
+                egraph_classes.to_object(py),
+            ]),
         }
     }
 
     #[args(exprs = "*")]
     fn extract(&mut self, py: Python, exprs: &PyTuple) -> SingletonOrTuple<(usize, PyObject)> {
+        self.egraph.rebuild();
         let ids: Vec<egg::Id> = exprs.iter().map(|expr| self.add(expr).0).collect();
         let extractor = egg::Extractor::new(&self.egraph, egg::AstSize);
 

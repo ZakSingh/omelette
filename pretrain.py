@@ -1,9 +1,9 @@
 import argparse
 import copy
 from PropLang import PropLang
+from MathLang import MathLang
 
 from pytorch_lightning.plugins import SingleDevicePlugin, DDPSpawnPlugin
-
 from ppo import PPOAgent, get_lang_from_str
 from rejoice.pretrain_dataset_gen import generate_dataset
 import torch_geometric as pyg
@@ -19,31 +19,25 @@ from multiprocessing import Pool
 from itertools import repeat
 import numpy as np
 import concurrent.futures
-
+import random
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_node_features", type=int, default=7,
-                        help="the number of node features for input graphs")
-    parser.add_argument("--num_actions", type=int, default=7,
-                        help="the number of node features for input graphs")
     parser.add_argument("--generate", type=bool, default=False,
                         help="the number of node features for input graphs")
     parser.add_argument("--count", type=int, default=100_000,
                         help="the number of expressions to generate")
     parser.add_argument("--num-threads", type=int, default=2,
                         help="the number of threads to spawn")
-    parser.add_argument("--seed", type=int, default=np.random.randint(1, 99999),
+    parser.add_argument("--seed", type=int, default=1,
                         help="the random seed used for generation")
-    parser.add_argument("--data_root", type=str, default="./PropLang",
-                        help="Root directory for data")
     parser.add_argument("--lang", type=str, default="PROP",
                         help="The language name to execute")
     args = parser.parse_args()
     return args
 
 
-def split_dataset(dataset, train=0.6, val=0.2, test=0.2):
+def split_dataset(dataset, train=0.6, val=0.3, test=0.1):
     t = int(train * len(dataset))
     v = int((train + val) * len(dataset))
     train_dataset = dataset[:t]
@@ -80,20 +74,21 @@ class PretrainModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss, acc = self.forward(batch)
-        self.log("train_loss", loss, batch_size=self.batch_size)
-        self.log("acc/train_acc", acc, batch_size=self.batch_size)
+        self.log("train_loss", loss, batch_size=self.batch_size, on_step=False, on_epoch=True)
+        self.log("acc/train_acc", acc, batch_size=self.batch_size, on_step=False, on_epoch=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         _, acc = self.forward(batch)
-        self.log("acc/val_acc", acc, batch_size=self.batch_size)
+        self.log("acc/val_acc", acc, batch_size=self.batch_size, on_step=False, on_epoch=True)
 
     def test_step(self, batch, batch_idx):
         _, acc = self.forward(batch)
-        self.log("acc/test_acc", acc, batch_size=self.batch_size)
+        self.log("acc/test_acc", acc, batch_size=self.batch_size, on_step=False, on_epoch=True)
 
 
-def train(lang_name: str, data_root: str):
+def train(lang_name: str, seed:int):
+    pl.seed_everything(seed, workers=True)
     lang = get_lang_from_str(lang_name)
     envs_mock = Struct(**{
         "single_observation_space": Struct(**{
@@ -104,12 +99,12 @@ def train(lang_name: str, data_root: str):
         })
     })
 
-    batch_size = 32
+    batch_size = 128
 
     agent = PPOAgent(envs=envs_mock, use_dropout=True)
     model = PretrainModule(copy.deepcopy(agent.actor),
                            batch_size=batch_size, learning_rate=1e-4)
-    dataset = PretrainingDataset(lang=lang, root=data_root)
+    dataset = PretrainingDataset(lang=lang, root=lang.name).shuffle()
     train_data, val_data, test_data = split_dataset(dataset)
 
     pyg_lightning_dataset = pyg.data.LightningDataset(train_dataset=train_data,
@@ -120,21 +115,22 @@ def train(lang_name: str, data_root: str):
                                                       )
 
     trainer = pl.Trainer(strategy=DDPSpawnPlugin(find_unused_parameters=False),
-                         log_every_n_steps=10,
                          precision=16,
                          accelerator='gpu',
                          gradient_clip_val=0.5,
                          devices=1,
-                         check_val_every_n_epoch=10,
-                         max_epochs=100_000)
+                         check_val_every_n_epoch=1,
+                         max_epochs=5000,
+                         deterministic=True)
     trainer.fit(model, pyg_lightning_dataset)
-    torch.save(model.model.state_dict(), "./weights.pt")
+
+    torch.save(model.model.state_dict(), f"./{lang.name}_weights.pt")
 
 
 def gen(x):
+    # seed on this process
     count, lang_name, seed = x
     np.random.seed(seed)
-
     rng = np.random.default_rng(seed)
     lang = get_lang_from_str(lang_name)
     generate_dataset(lang, num=count, rng=rng)
@@ -142,15 +138,19 @@ def gen(x):
 
 def main():
     args = parse_args()
-    if args.generate:
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+
+    if args.generate == True:
         print("initializing with seed", args.seed)
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            t = [(int(args.count / args.num_threads), args.lang, args.seed + i)
-                 for i in range(args.count)]
+            t = [(args.count, args.lang, args.seed + i) for i in range(args.count)]
             executor.map(gen, t)
-
-    train(args.lang, args.data_root)
+    else:
+        train(args.lang, args.seed)
 
 
 if __name__ == "__main__":

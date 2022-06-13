@@ -24,3 +24,4 @@ class PretrainingDataset(Dataset):
     def get(self, idx):
         data = torch.load(osp.join(self.root_dir, self.raw_file_names[idx]))
         return data
+

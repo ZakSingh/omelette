@@ -17,3 +17,9 @@ dependencies:
   - captum
   - gym
   - torchmetrics
+  - matplotlib
+  - pandas
+  - seaborn
+  - scipy
+variables:
+- TF_ENABLE_ONEDNN_OPTS: 0
