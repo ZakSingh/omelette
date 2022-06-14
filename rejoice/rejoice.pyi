@@ -17,3 +17,6 @@ class EGraph:
 
     def classes(self) -> dict[int, tuple[Any, list[Any]]]:
         """Dict of type (class_id, (data, [nodes]))"""
+
+    def total_size(self) -> int:
+        """Size of the hascons"""

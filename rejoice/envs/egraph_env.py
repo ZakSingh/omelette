@@ -9,6 +9,8 @@ from typing import Tuple, Optional, Union
 from ..graph_space import GraphSpace
 import math
 
+def remap(x, in_min, in_max, out_min, out_max):
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
 
 class EGraphEnv(gym.Env):
     """Custom gym env for the egraph rule selection task."""
@@ -16,6 +18,7 @@ class EGraphEnv(gym.Env):
 
     def __init__(self, lang: Language, expr: any, node_limit: int = 10_000, use_shrink_action=True):
         super(EGraphEnv, self).__init__()
+        self.step_count = 0
         self.lang = lang
         self.expr = expr
         self.orig_expr = expr
@@ -36,9 +39,11 @@ class EGraphEnv(gym.Env):
         self.egraph, self.max_cost, self.prev_cost = None, None, None
         self.is_first_step = True
 
-    def step(self, action: any) -> Tuple[any, float, bool, dict]:
-        info = {"actual_cost": self.prev_cost}
+        self.acc_rewrites = 0
 
+    def step(self, action: any) -> Tuple[any, float, bool, dict]:
+        self.step_count += 1
+        info = {"actual_cost": self.prev_cost, "acc_rewrites": self.acc_rewrites}
         is_stop_action = action == self.lang.num_rules
         if is_stop_action:
             # Agent has chosen to stop optimizing and terminate current episode
@@ -55,15 +60,29 @@ class EGraphEnv(gym.Env):
             # this can shrink the egraph and help us recover from e-node explosion.
             # print("rebasing egraph")
             # print("prev_cost", self.prev_cost)
+            old_size = self.egraph.total_size()
             best_cost, best_expr = self.egraph.extract(self.expr)
+            best_cost = float(best_cost)
             # print("best_cost", best_cost, "best_expr", best_expr)
             self.expr = best_expr
             # re-create the egraph given this new expression
             self.egraph = EGraph()
             self.egraph.add(self.expr)
             self.prev_cost = float(self.egraph.extract(self.expr)[0])
+            # print("rebase get_obs")
             new_obs = self._get_obs()
-            reward = 0.0
+            # reward for rebase 
+            new_size = self.egraph.total_size()
+            if new_size == old_size:
+                # Didn't get any e-graph reduction from rebasing, no point to this
+                reward = -0.5
+            else:
+                # reward is always negative (we don't want to encourage this)
+                # but bigger reduction to size == less negative reward
+                # keep in mind that magnitudes of this MUST be smaller than pos reward from cost reduction
+                # i.e. if a cost reduction can be achieved after a rebase, we want to encourage taking the rebase
+                reward = -(new_size / old_size) / 10
+            print("rebase old size:", old_size, "new size:", new_size, "reward", reward)
             is_done = False
             info["actual_cost"] = self.prev_cost
             return new_obs, reward, is_done, info
@@ -72,10 +91,13 @@ class EGraphEnv(gym.Env):
         rewrite_to_apply = [self.rewrite_rules[action]]
         stop_reason, num_applications, num_enodes, num_eclasses = self.egraph.run(
             rewrite_to_apply, iter_limit=1, node_limit=self.node_limit)
+        self.acc_rewrites += num_applications
+        info["acc_rewrites"] = self.acc_rewrites
+
         info["stop_reason"] = stop_reason
         if stop_reason == 'SATURATED':
             # if it was saturated, applying the rule did nothing; no need to re-extract
-            reward = -0.1
+            reward = -0.2
         elif stop_reason == 'NODE_LIMIT' or stop_reason == 'TIME_LIMIT':
             reward = -1.0
         else:
@@ -84,8 +106,9 @@ class EGraphEnv(gym.Env):
             info["actual_cost"] = best_cost
             if best_cost == self.prev_cost:
                 # expanded egraph, but didn't get us a better extraction cost
-                reward = -0.01
+                reward = -0.05
             else:
+                # give reward based upon improvement to extraction cost
                 reward = (self.prev_cost - best_cost) / self.max_cost
                 self.prev_cost = best_cost
 
@@ -98,7 +121,6 @@ class EGraphEnv(gym.Env):
             new_obs = None
 
         self.is_first_step = False
-
         return new_obs, reward, is_done, info
 
     def reset(
@@ -108,24 +130,25 @@ class EGraphEnv(gym.Env):
             return_info: bool = False,
             options: Optional[dict] = None,
     ) -> Union[any, "tuple[any, dict]"]:
+        self.step_count = 0
         self.egraph = EGraph()
         self.expr = self.orig_expr
         self.egraph.add(self.expr)
+        self.acc_rewrites = 0
         self.max_cost = float(self.egraph.extract(self.expr)[0])
         self.prev_cost = self.max_cost
         self.is_first_step = True
         # reward is normalized to (0, max_cost)
+        # print("reset get_obs")
         new_obs = self._get_obs()
-        info = {}
-        info = {"actual_cost": self.prev_cost}
-        info["actions_available"] = sum(new_obs.action_mask)
+        info = {"actual_cost": self.prev_cost, "actions_available": sum(new_obs.action_mask)}
         if return_info:
             return new_obs, info
         else:
             return new_obs
 
     def _get_obs(self):
-        return self.lang.encode_egraph(self.egraph, use_shrink_action=self.use_shrink_action)
+        return self.lang.encode_egraph(self.egraph, use_shrink_action=self.use_shrink_action, step=self.step_count)
 
     def close(self):
         pass

@@ -1,10 +1,13 @@
 import functools
-from rejoice.lib import Language
+from rejoice.lib import Language, TestExprs
 from rejoice import vars
 
 
 class MathLang(Language):
     """A simple Math language for testing."""
+
+    def get_supported_datatypes(self):
+        return ["integers"]
 
     @functools.cache
     def all_operators(self) -> "list[tuple]":
@@ -93,3 +96,22 @@ class MathLang(Language):
         except:
             pass
         return None
+
+    def get_single_task_exprs(self):
+        ops = self.all_operators_obj()
+
+        Add, Integral, Mul, Pow, Diff, Ln, Div, Cos, Sub, Sqrt = ops.add, ops.integral, ops.mul, ops.pow, ops.diff, ops.ln, ops.div, ops.cos, ops.sub, ops.sqrt
+
+        s = ops.sub(ops.add(16, 2), 0)
+
+        # s = Pow(x=Add(x=Ln(x=743), y=0), y=Sub(x=Sqrt(x=622), y=0))
+        # s = Pow(x=Add(x=743, y=0), y=Sub(x=Sqrt(x=622), y=0))
+
+        e = ops.mul(ops.add(16, 2), ops.mul(4, 0))
+
+        return TestExprs(saturatable=s,
+                         explodes=e)
+
+    def get_multi_task_exprs(self, count=16):
+        """Get a list of exprs for use in multi-task RL training"""
+        return [self.gen_expr(p_leaf=0.0) for i in range(count)]

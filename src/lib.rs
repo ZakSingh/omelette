@@ -510,6 +510,10 @@ impl EGraph {
         *&self.egraph.total_number_of_nodes()
     }
 
+    fn total_size(&mut self) -> usize {
+        *&self.egraph.total_size()
+    }
+
     fn eclass_ids(&mut self) -> Vec<String> {
         let eg = &self.egraph;
         let mut ids: Vec<String> = eg.classes().map(|c| c.id.to_string()).collect();

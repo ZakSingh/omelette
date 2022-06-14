@@ -17,6 +17,8 @@ import string
 # needed for safe expression generation
 sys.setrecursionlimit(10**5)
 
+TestExprs = namedtuple("TestExprs", ["saturatable", "explodes"])
+
 
 class ObjectView(object):
     def __init__(self, d):
@@ -62,6 +64,12 @@ class Language(Protocol):
         ...
 
     def get_terminals(self) -> "list":
+        ...
+    
+    def get_single_task_exprs(self) -> TestExprs:
+        ...
+
+    def get_multi_task_exprs(self) -> list:
         ...
 
     @functools.cached_property
@@ -151,7 +159,7 @@ class Language(Protocol):
 
         return eclass_lookup
 
-    def encode_egraph(self, egraph: EGraph, y=None, use_shrink_action=False) -> geom.data.Data:
+    def encode_egraph(self, egraph: EGraph, y=None, use_shrink_action=False, step=None) -> geom.data.Data:
         egraph.rebuild()
         # first_stamp = int(round(time.time() * 1000))
         num_enodes = egraph.num_enodes()
@@ -216,8 +224,9 @@ class Language(Protocol):
         edge_index = torch.concat(
             [eclass_enode_edges, *all_node_edges], dim=1).long()
 
+
         enode_eclass_edge_attr = torch.Tensor(
-            [0, 1]).expand(torch.concat(all_node_edges, dim=1).size()[-1], -1)
+            [0, 1]).expand(torch.concat(all_node_edges, dim=1).size()[-1], -1) if len(all_node_edges) >0 else torch.Tensor([])
 
         edge_attr = torch.concat(
             [eclass_enode_edge_attr, enode_eclass_edge_attr])
@@ -228,8 +237,12 @@ class Language(Protocol):
         action_mask = x[:, rule_start:].sum(dim=0).clamp(0, 1)
         if use_shrink_action:
             action_mask = torch.cat((action_mask, torch.ones(2)))
+            # if step < 5000:
+            #     action_mask[-2] = 0
         else:
             action_mask = torch.cat((action_mask, torch.ones(1)))
+            # if step < 5000:
+            #     action_mask[-1] = 0
 
         if y is not None:
             y = torch.Tensor([y]).long()

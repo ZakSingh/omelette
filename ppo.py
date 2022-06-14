@@ -1,4 +1,5 @@
 from collections import deque
+from LambdaLang import LambdaLang
 from PropLang import PropLang
 from rejoice.lib import Language
 
@@ -17,6 +18,7 @@ import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 from MathLang import MathLang
+from LambdaLang import LambdaLang
 from rejoice import envs, EGraph
 import time
 
@@ -35,6 +37,12 @@ def parse_args():
                         help="if toggled, cuda will be enabled by default")
 
     # omelette-specific configuration
+    parser.add_argument("--mode", type=str, choices=["single_task_sat", "single_task_explodes", "bc", "multitask"], default="single_task_sat")
+    parser.add_argument("--termination-decay", type=bool, default=True,
+                        help="Prevent the agent from taking the termination action until n steps have elapsed.")
+
+    parser.add_argument("--multitask-count", type=int, default=16,
+                        help="the number of tasks to generate for multitask eval")
     parser.add_argument("--print-actions", type=bool, default=False,
                         help="print the (action, reward) tuples that make up each episode")
     parser.add_argument("--pretrained-weights-path", type=str, default=None,
@@ -100,7 +108,8 @@ def parse_args():
     return args
 
 
-def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang_name: str, use_shrink_action: bool, node_limit: int, num_egg_iter: int):
+
+def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang_name: str, use_shrink_action: bool, node_limit: int, num_egg_iter: int, mode: str, multitask_count = 0):
     def run_egg(lang: Language, expr):
         print(f"running egg for env {idx}", "expr", expr)
         first_stamp = int(round(time.time() * 1000))
@@ -120,22 +129,19 @@ def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang
         # TODO: refactor so the lang and expr can be passed in
         lang = get_lang_from_str(lang_name)
 
-        if lang_name == "PROP":
-            ops = lang.all_operators_dict()
-            AND, NOT, OR, IM = ops["and"], ops["not"], ops["or"], ops["implies"]
-            x, y, z = "x", "y", "z"
-            # expr = OR(AND(IM(NOT(y), NOT(x)), IM(y, z)), NOT(IM(x, AND(y, z))))
-            # expr = OR(AND(IM(y, x), IM(y, z)), IM(x, AND(y, z)))
-            expr = OR(AND(x, y), IM(x, z))
-            # expr = AND(IM(NOT(y), NOT(x)), IM(y, z))
-        elif lang_name == "MATH":
-            ops = lang.all_operators_obj()
-            expr = ops.add(1, ops.add(2, ops.add(3, ops.add(4, ops.add(5, ops.add(6, 7))))))
-            # expr = ops.mul(ops.add(16, 2), ops.mul(4, 0))
-            # expr = ops.mul(1, ops.add(
-            #     7, ops.mul(ops.add(16, 2), ops.mul(4, 0))))
-        if idx == 0:
-            run_egg(lang, expr)
+        if mode == "single_task_sat":
+            single_task_exprs = lang.get_single_task_exprs()
+            expr = single_task_exprs.saturatable
+            if idx == 1:
+                run_egg(lang, expr)
+        elif mode == "single_task_explodes":
+            single_task_exprs = lang.get_single_task_exprs()
+            expr = single_task_exprs.explodes
+            if idx == 1:
+                run_egg(lang, expr)
+        elif mode == "multitask":
+            tasks = lang.get_multi_task_exprs()
+            expr = tasks[idx % len(tasks)]
 
         env = gym.make(env_id, lang=lang, expr=expr, use_shrink_action=use_shrink_action, node_limit=node_limit)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
@@ -152,6 +158,8 @@ def get_lang_from_str(name: str) -> Language:
         return PropLang()
     elif name == "MATH":
         return MathLang()
+    elif name == "LAMBDA":
+        return LambdaLang()
 
 
 class CategoricalMasked(Categorical):
@@ -180,9 +188,10 @@ class CategoricalMasked(Categorical):
 
 
 class PPOAgent(nn.Module):
-    def __init__(self, envs: gym.vector.AsyncVectorEnv, weights_path=None, use_dropout=False, use_edge_attr=True, use_shrink_action=True):
+    def __init__(self, envs: gym.vector.AsyncVectorEnv, weights_path=None, use_dropout=False, use_edge_attr=True, use_shrink_action=True, device=torch.device("cuda")):
         super().__init__()
         print("use_edge_attr", use_edge_attr, "use_dropout", use_dropout, "weights_path", weights_path)
+        self.device = device
         self.critic = GATNetwork(num_node_features=envs.single_observation_space.num_node_features,
                                  n_actions=1,
                                  n_layers=3,
@@ -214,7 +223,7 @@ class PPOAgent(nn.Module):
 
         if invalid_action_mask is not None:
             probs = CategoricalMasked(
-                logits=logits, mask=invalid_action_mask)
+                logits=logits, mask=invalid_action_mask, device=self.device)
         else:
             probs = Categorical(logits=logits)
 
@@ -228,7 +237,7 @@ def main():
     torch.cuda.empty_cache()
     args = parse_args()
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"ppo_logs/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % (
@@ -245,11 +254,16 @@ def main():
     lang = get_lang_from_str(args.lang)
 
     # env setup
-    envs = gym.vector.AsyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, run_name,
-                  args.max_episode_steps, lang_name=args.lang, use_shrink_action=args.use_shrink_action, node_limit=args.node_limit, num_egg_iter=args.num_egg_iter) for i in range(args.num_envs)],
-        shared_memory=False
-    )
+    if args.num_envs == 1:
+        envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed + i, i, run_name,
+                    args.max_episode_steps, lang_name=args.lang, use_shrink_action=args.use_shrink_action, node_limit=args.node_limit, num_egg_iter=args.num_egg_iter, mode=args.mode, multitask_count=args.multitask_count) for i in range(args.num_envs)])
+    else:
+        envs = gym.vector.AsyncVectorEnv(
+            [make_env(args.env_id, args.seed + i, i, run_name,
+                    args.max_episode_steps, lang_name=args.lang, use_shrink_action=args.use_shrink_action, node_limit=args.node_limit, num_egg_iter=args.num_egg_iter, mode=args.mode, multitask_count=args.multitask_count) for i in range(args.num_envs)],
+            shared_memory=False,
+            copy=False
+        )
 
     assert isinstance(envs.single_action_space,
                       gym.spaces.Discrete), "only discrete action space is supported"
@@ -259,7 +273,7 @@ def main():
         action_names.append("shrink")
 
     agent = PPOAgent(
-        envs, weights_path=args.pretrained_weights_path, use_dropout=False, use_edge_attr=args.use_edge_attr, use_shrink_action=args.use_shrink_action).to(device)
+        envs, weights_path=args.pretrained_weights_path, use_dropout=False, use_edge_attr=args.use_edge_attr, use_shrink_action=args.use_shrink_action, device=device).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -329,8 +343,14 @@ def main():
                                       item["episode"]["l"], global_step)
                     writer.add_scalar("charts/episodic_cost",
                                       item["actual_cost"], global_step)
+                    
+                    acc_rw = item.get("acc_rewrites")
+                    if acc_rw is not None:
+                        writer.add_scalar("charts/acc_rewrites",
+                                        acc_rw, global_step)
+
                     print(
-                        f"global_step={global_step:7}, episode_length={item['episode']['l']:3}, episodic_return={item['episode']['r']:5.2f}, episodic_cost={item['actual_cost']:5.2f}")
+                        f"global_step={global_step:7}, episode_length={item['episode']['l']:3}, episodic_return={item['episode']['r']:5.2f}, episodic_cost={item['actual_cost']:5.2f}, acc_rw={acc_rw}")
 
                     if args.print_actions:
                         # TODO: clean this up

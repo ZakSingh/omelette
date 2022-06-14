@@ -218,10 +218,15 @@ def generate_dataset(lang: Language, num=10, rng=np.random.default_rng()):
     for ind, expr in enumerate(exprs):
         print("Generating expr", ind, expr)
         solver = EGraphSolver(lang, expr)
-        with time_limit(45):
-            try:
-                solver.optimize()
-            except Exception as e:
-                print("Failed to solve expr", ind, expr)
-                print(e)
-                continue
+        try:
+            solver.optimize()
+        except Exception as e:
+            print("Failed to solve expr", ind, expr)
+            print(e)
+            continue
+
+def generate_exploders(lang: Language, num=1000, rng=np.random.default_rng()):
+    exprs = [lang.gen_expr(p_leaf=0.0) for i in range(num)]
+    for ind, expr in enumerate(exprs):
+        print("Generating expr", ind, expr)
+        # attempt to solve each expression with a 20k iteration limit. 
