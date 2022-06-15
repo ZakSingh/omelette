@@ -149,6 +149,11 @@ class Language(Protocol):
         rl_names = [rl[0] for rl in self.all_rules()]
         return rl_names.index(rname)
 
+    @functools.cached_property
+    def rule_names(self) -> list[str]:
+        rl_names = [rl[0] for rl in self.all_rules()]
+        return rl_names
+
     def matches_to_lookup(self, eclass_ids: "list[str]", matches):
         # restructure the dict
         eclass_lookup = {k: [0]*self.num_rules for k in eclass_ids}
@@ -159,7 +164,7 @@ class Language(Protocol):
 
         return eclass_lookup
 
-    def encode_egraph(self, egraph: EGraph, y=None, use_shrink_action=False, step=None) -> geom.data.Data:
+    def encode_egraph(self, egraph: EGraph, y=None, use_shrink_action=False, step=None, last_action_ind=None, last_action_apps=None) -> geom.data.Data:
         egraph.rebuild()
         # first_stamp = int(round(time.time() * 1000))
         num_enodes = egraph.num_enodes()
@@ -248,7 +253,7 @@ class Language(Protocol):
             y = torch.Tensor([y]).long()
 
         data = geom.data.Data(x=x, edge_index=edge_index, edge_attr=edge_attr,
-                              y=y, action_mask=action_mask)
+                              y=y, action_mask=action_mask, last_action_ind=last_action_ind, last_action_apps=last_action_apps)
         # second_stamp = int(round(time.time() * 1000))
         # Calculate the time taken in milliseconds
         # time_taken = second_stamp - first_stamp

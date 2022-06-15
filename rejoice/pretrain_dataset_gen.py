@@ -17,11 +17,12 @@ Step = namedtuple("Step", ['action', 'action_name', 'stop_reason', 'cost', 'num_
 
 class EGraphSolver:
 
-    def __init__(self, lang: Language, expr: any, node_limit=10_000, rng=np.random.default_rng()):
+    def __init__(self, lang: Language, expr: any, node_limit=10_000, rng=np.random.default_rng(), iter_lim=7):
         self.lang = lang
         self.expr = expr
         self.rewrite_rules = lang.rewrite_rules()
         self.node_limit = node_limit
+        self.iter_limit = iter_lim
         self.rng = rng
         self.max_cost, _ = self.new_egraph().extract(self.expr)
         self.best_possible_cost, self.best_possible_expr, self.num_applications, self.num_enodes, self.num_eclasses = self.exhaustive_search()
@@ -166,7 +167,9 @@ class EGraphSolver:
             data = self.lang.encode_egraph(egraph, action)
             data.max_cost = self.max_cost
             data.min_cost = self.best_possible_cost
+            # number of actions taken by egg to solve the expression this graph is from
             data.egg_rewrites = self.num_applications
+
             data.egg_enodes = self.num_enodes
             data.egg_eclasses = self.num_eclasses
             torch.save(
@@ -182,7 +185,7 @@ class EGraphSolver:
                 egraph.run([self.lang.rewrite_rules()[action]],
                            iter_limit=1, node_limit=self.node_limit)
             elif action == self.lang.num_rules:
-                self.exhaustive_search(7)
+                self.exhaustive_search(self.iter_limit)
                 best_cost, best_expr = egraph.extract(self.expr)
                 if best_cost == self.best_possible_cost:
                     print("Validated")
@@ -198,7 +201,9 @@ class EGraphSolver:
         best_cost = float(best_cost)
         return action, self.lang.all_rules()[action][0], stop_reason, best_cost, num_applications, num_enodes, num_eclasses, best_expr
 
-    def exhaustive_search(self, iter_limit=7):
+    def exhaustive_search(self, iter_limit=None):
+        if iter_limit is None:
+            iter_limit = self.iter_limit
         egraph = self.new_egraph()
         stop_reason, num_applications, num_enodes, num_eclasses = egraph.run(self.lang.rewrite_rules(), iter_limit=iter_limit,
                    node_limit=self.node_limit, use_backoff=True)

@@ -36,7 +36,7 @@ class EGraphEnv(gym.Env):
                                             high=lang.get_feature_upper_bounds())
         self.reward_range = (-1, 1)
         self.node_limit = node_limit
-        self.egraph, self.max_cost, self.prev_cost = None, None, None
+        self.egraph, self.max_cost, self.prev_cost, self.best_seen_cost = None, None, None, None
         self.is_first_step = True
 
         self.acc_rewrites = 0
@@ -82,7 +82,7 @@ class EGraphEnv(gym.Env):
                 # keep in mind that magnitudes of this MUST be smaller than pos reward from cost reduction
                 # i.e. if a cost reduction can be achieved after a rebase, we want to encourage taking the rebase
                 reward = -(new_size / old_size) / 10
-            print("rebase old size:", old_size, "new size:", new_size, "reward", reward)
+            # print("rebase old size:", old_size, "new size:", new_size, "reward", reward)
             is_done = False
             info["actual_cost"] = self.prev_cost
             return new_obs, reward, is_done, info
@@ -106,7 +106,8 @@ class EGraphEnv(gym.Env):
             info["actual_cost"] = best_cost
             if best_cost == self.prev_cost:
                 # expanded egraph, but didn't get us a better extraction cost
-                reward = -0.05
+                reward = -((1 / self.max_cost) / 10)
+                # reward = -0.001 # -0.05
             else:
                 # give reward based upon improvement to extraction cost
                 reward = (self.prev_cost - best_cost) / self.max_cost
@@ -137,6 +138,7 @@ class EGraphEnv(gym.Env):
         self.acc_rewrites = 0
         self.max_cost = float(self.egraph.extract(self.expr)[0])
         self.prev_cost = self.max_cost
+        self.best_seen_cost = self.max_cost
         self.is_first_step = True
         # reward is normalized to (0, max_cost)
         # print("reset get_obs")

@@ -14,7 +14,8 @@ class LambdaLang(Language):
         return list(map(self.op_tuple, [
             ("f", "x"),
             ("g", "x", "y"),
-            ("h", "x")
+            ("h", "x"),
+            ("add", "x", "y")
         ]))
 
     @functools.cache
@@ -24,11 +25,34 @@ class LambdaLang(Language):
         op = self.all_operators_obj()
         f, g, h = op.f, op.g, op.h
 
+        def rec(e, lim=100):
+            if lim == 0:
+                return e
+            return rec(f(e), lim - 1)
+
+        e = rec(x)
+
+        # to reduce recursion depth needed
+        terms = ["a"*i for i in range(100)]
+        rules = [[t + "r", h(g(x, Z)), h(g(f(x), t))] for t in terms]
+
         return [
             ["h",  h(g(x, Z)),  h(g(f(x), Z))],
             ["g1", g(f(x), y),  g(x, f(y))],
             ["g2", g(Z, y),     g(Z, Z)],
-            ["g3", g(x, y), x]
+            ["g3", e, x],  # resetting back to initial state
+
+            # *rules
+
+            # ["assoc-add", add(add(x, y), k), add(x, add(y, k))],
+            # ["hx",  h(g(x, Z)),  h(g(f(x), W))],
+            # ["g2x", g(W, y),     g(W, W)],
+
+            # ["g4", g(Z, y),     g(y, Z)],
+            # ["g5", g(y, Z),     g(Z, Z)],
+            # ["g6", g(x, y), g(y, x)],
+            # ["g7", g(y, x), g(x, y)],
+            # ["h2", y,  f(f(f(f(y))))],
         ]
 
 
@@ -42,8 +66,8 @@ class LambdaLang(Language):
         ops = self.all_operators_obj()
         f, g, h = ops.f, ops.g, ops.h
 
-        s = h(g("x", "Z"))
-        e = h(g("x", "Z"))
+        s = h(g(f("x"), "Z")) # h(g("x", "Z"))
+        e = h(g(f("x"), "Z"))
 
         return TestExprs(saturatable=s,
                          explodes=e)
