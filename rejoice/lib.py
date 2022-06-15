@@ -2,7 +2,7 @@ import functools
 
 from rejoice import *
 from typing import Protocol, Union, NamedTuple
-from collections import OrderedDict, namedtuple
+from collections import OrderedDict, namedtuple, Hashable
 from rejoice.util import BytesIntEncoder
 import torch
 import torch_geometric as geom
@@ -43,12 +43,13 @@ class Language(Protocol):
         name, *args = op
         tup = NamedTuple(name, [(a, int) for a in args])
         globals()[name] = tup
+        globals()[tup.__name__] = tup
         return tup
 
     def eclass_analysis(self, *args) -> any:
         ...
 
-    def all_operators(self) -> "list[tuple]":
+    def all_operators(self) -> list:
         ...
 
     def all_operators_obj(self):
@@ -164,7 +165,7 @@ class Language(Protocol):
 
         return eclass_lookup
 
-    def encode_egraph(self, egraph: EGraph, y=None, use_shrink_action=False, step=None, last_action_ind=None, last_action_apps=None) -> geom.data.Data:
+    def encode_egraph(self, egraph: EGraph, y=None, use_shrink_action=False, step=None) -> geom.data.Data:
         egraph.rebuild()
         # first_stamp = int(round(time.time() * 1000))
         num_enodes = egraph.num_enodes()
@@ -253,7 +254,7 @@ class Language(Protocol):
             y = torch.Tensor([y]).long()
 
         data = geom.data.Data(x=x, edge_index=edge_index, edge_attr=edge_attr,
-                              y=y, action_mask=action_mask, last_action_ind=last_action_ind, last_action_apps=last_action_apps)
+                              y=y, action_mask=action_mask)
         # second_stamp = int(round(time.time() * 1000))
         # Calculate the time taken in milliseconds
         # time_taken = second_stamp - first_stamp
@@ -288,6 +289,10 @@ class Language(Protocol):
                 self.feature_names[op_start:rule_start]) if node[op_start + ind] == 1]
 
         return node_data
+
+    def eval_expr(self, expr_str: str):
+        ops = self.all_operators_dict() # needed to avoid pickling errors
+        return eval(expr_str)
 
     def viz_egraph(self, data):
         """Vizualize a PyTorch Geometric data object containing an egraph."""

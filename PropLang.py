@@ -81,6 +81,7 @@ class PropLang(Language):
         AND, NOT, OR, IM = ops["and"], ops["not"], ops["or"], ops["implies"]
         And, Not, Or, Im = ops["and"], ops["not"], ops["or"], ops["implies"]
         x, y, z = "x", "y", "z"
+
         
         # s = AND(IM(NOT(y), NOT(x)), IM(y, z))
         s = Or(x=Not(x=Not(x=And(x=And(x=True, y=True), y=And(x=True, y='r')))), y=Not(x=Not(x='i')))

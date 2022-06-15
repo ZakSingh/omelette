@@ -1,4 +1,4 @@
-from collections import deque
+from collections import deque, namedtuple
 from LambdaLang import LambdaLang
 from PropLang import PropLang
 from rejoice.lib import Language
@@ -38,6 +38,7 @@ def parse_args():
 
     # omelette-specific configuration
     parser.add_argument("--mode", type=str, choices=["single_task_sat", "single_task_explodes", "bc", "multitask"], default="single_task_sat")
+    parser.add_argument("--expr-str", type=str, default=None, help="Expression to run")
     parser.add_argument("--termination-decay", type=bool, default=True,
                         help="Prevent the agent from taking the termination action until n steps have elapsed.")
 
@@ -111,7 +112,8 @@ def parse_args():
 
 
 
-def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang_name: str, use_shrink_action: bool, node_limit: int, num_egg_iter: int, mode: str, multitask_count = 0):
+def make_env(env_id, seed, idx: int, input_expr, run_name: str, max_episode_steps: int, lang_name: str, use_shrink_action: bool, node_limit: int, num_egg_iter: int, mode: str, multitask_count = 0):
+
     def run_egg(lang: Language, expr):
         print(f"running egg for env {idx}", "expr", expr)
         first_stamp = int(round(time.time() * 1000))
@@ -131,19 +133,22 @@ def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang
         # TODO: refactor so the lang and expr can be passed in
         lang = get_lang_from_str(lang_name)
 
-        if mode == "single_task_sat":
-            single_task_exprs = lang.get_single_task_exprs()
-            expr = single_task_exprs.saturatable
-            if idx == 1:
-                run_egg(lang, expr)
-        elif mode == "single_task_explodes":
-            single_task_exprs = lang.get_single_task_exprs()
-            expr = single_task_exprs.explodes
-            if idx == 1:
-                run_egg(lang, expr)
-        elif mode == "multitask":
-            tasks = lang.get_multi_task_exprs()
-            expr = tasks[idx % len(tasks)]
+        if input_expr is None:
+            if mode == "single_task_sat":
+                single_task_exprs = lang.get_single_task_exprs()
+                expr = single_task_exprs.saturatable
+                if idx == 1:
+                    run_egg(lang, expr)
+            elif mode == "single_task_explodes":
+                single_task_exprs = lang.get_single_task_exprs()
+                expr = single_task_exprs.explodes
+                if idx == 1:
+                    run_egg(lang, expr)
+            elif mode == "multitask":
+                tasks = lang.get_multi_task_exprs()
+                expr = tasks[idx % len(tasks)]
+        else:
+            expr = lang.eval_expr(input_expr)
 
         env = gym.make(env_id, lang=lang, expr=expr, use_shrink_action=use_shrink_action, node_limit=node_limit)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
@@ -156,11 +161,11 @@ def make_env(env_id, seed, idx: int, run_name: str, max_episode_steps: int, lang
 
 
 def get_lang_from_str(name: str) -> Language:
-    if name == "PROP":
+    if name in ["PROP", "PropLang"]:
         return PropLang()
-    elif name == "MATH":
+    elif name in ["MATH", "MathLang"]:
         return MathLang()
-    elif name == "LAMBDA":
+    elif name in ["LAMBDA", "LambdaLang"]:
         return LambdaLang()
 
 
@@ -190,19 +195,19 @@ class CategoricalMasked(Categorical):
 
 
 class PPOAgent(nn.Module):
-    def __init__(self, envs: gym.vector.AsyncVectorEnv, weights_path=None, use_dropout=False, use_edge_attr=True, use_shrink_action=True, device=torch.device("cuda")):
+    def __init__(self, n_actions: int, n_node_features: int, weights_path=None, use_dropout=False, use_edge_attr=True, device=torch.device("cuda")):
         super().__init__()
         print("use_edge_attr", use_edge_attr, "use_dropout", use_dropout, "weights_path", weights_path)
         self.device = device
-        self.critic = GATNetwork(num_node_features=envs.single_observation_space.num_node_features,
+        self.critic = GATNetwork(num_node_features=n_node_features,
                                  n_actions=1,
                                  n_layers=3,
                                  hidden_size=128,
                                  dropout=(0.3 if use_dropout else 0.0),
                                  use_edge_attr=use_edge_attr,
                                  out_std=1.)
-        self.actor = GATNetwork(num_node_features=envs.single_observation_space.num_node_features,
-                                n_actions=envs.single_action_space.n,
+        self.actor = GATNetwork(num_node_features=n_node_features,
+                                n_actions=n_actions,
                                 n_layers=3,
                                 hidden_size=128,
                                 dropout=(0.3 if use_dropout else 0.0),
@@ -234,10 +239,19 @@ class PPOAgent(nn.Module):
 
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
 
+class DictObj:
+    def __init__(self, in_dict:dict):
+        assert isinstance(in_dict, dict)
+        for key, val in in_dict.items():
+            if isinstance(val, (list, tuple)):
+                setattr(self, key, [DictObj(x) if isinstance(x, dict) else x for x in val])
+            else:
+                setattr(self, key, DictObj(val) if isinstance(val, dict) else val)
 
 def run_ppo(**kwargs):
+    all_args = vars(parse_args()) | kwargs
+    args = DictObj(all_args)
     torch.cuda.empty_cache()
-    args = kwargs # parse_args()
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     writer = SummaryWriter(f"ppo_logs/{run_name}")
     writer.add_text(
@@ -260,15 +274,15 @@ def run_ppo(**kwargs):
     if not os.path.exists(weights_output_path):
         os.makedirs(weights_output_path)
 
-
     # env setup
+    print("spawning envs")
     if args.num_envs == 1:
-        envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed + i, i, run_name,
-                    args.max_episode_steps, lang_name=args.lang, use_shrink_action=args.use_shrink_action, node_limit=args.node_limit, num_egg_iter=args.num_egg_iter, mode=args.mode, multitask_count=args.multitask_count) for i in range(args.num_envs)])
+        envs = gym.vector.SyncVectorEnv([make_env(env_id=args.env_id, input_expr=args.expr_str, seed=args.seed + i, idx=i, run_name=run_name,
+                    max_episode_steps=args.max_episode_steps, lang_name=args.lang, use_shrink_action=args.use_shrink_action, node_limit=args.node_limit, num_egg_iter=args.num_egg_iter, mode=args.mode, multitask_count=args.multitask_count) for i in range(args.num_envs)])
     else:
         envs = gym.vector.AsyncVectorEnv(
-            [make_env(args.env_id, args.seed + i, i, run_name,
-                    args.max_episode_steps, lang_name=args.lang, use_shrink_action=args.use_shrink_action, node_limit=args.node_limit, num_egg_iter=args.num_egg_iter, mode=args.mode, multitask_count=args.multitask_count) for i in range(args.num_envs)],
+            [make_env(env_id=args.env_id, input_expr=args.expr_str, seed=args.seed + i, idx=i, run_name=run_name,
+                    max_episode_steps=args.max_episode_steps, lang_name=args.lang, use_shrink_action=args.use_shrink_action, node_limit=args.node_limit, num_egg_iter=args.num_egg_iter, mode=args.mode, multitask_count=args.multitask_count) for i in range(args.num_envs)],
             shared_memory=False,
             copy=False
         )
@@ -279,7 +293,7 @@ def run_ppo(**kwargs):
         action_names.append("shrink")
 
     agent = PPOAgent(
-        envs, weights_path=args.pretrained_weights_path, use_dropout=False, use_edge_attr=args.use_edge_attr, use_shrink_action=args.use_shrink_action, device=device).to(device)
+        n_node_features=envs.single_observation_space.num_node_features, n_actions=envs.single_action_space.n, weights_path=args.pretrained_weights_path, use_dropout=False, use_edge_attr=args.use_edge_attr, device=device).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     if args.agent_weights_path is not None:
@@ -304,7 +318,6 @@ def run_ppo(**kwargs):
     next_obs = pyg.data.Batch.from_data_list(envs.reset()).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     num_updates = args.total_timesteps // args.batch_size
-
     for update in range(1, num_updates + 1):
         # Annealing the learning rate if instructed to do so.
         if args.anneal_lr:
@@ -425,7 +438,6 @@ def run_ppo(**kwargs):
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
-
         # Optimizing the policy and value network (learn!)
         b_inds = np.arange(args.batch_size)
         clipfracs = []
@@ -515,7 +527,8 @@ def run_ppo(**kwargs):
     writer.close()
 
     # Save weights of agent now that it's been trained
-    torch.save(agent.state_dict(), weights_output_path)
+    torch.save(agent.state_dict(), f"{weights_output_path}/{args.exp_name}")
+    return agent
 
 
 if __name__ == "__main__":
