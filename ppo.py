@@ -41,6 +41,8 @@ def parse_args():
     parser.add_argument("--termination-decay", type=bool, default=True,
                         help="Prevent the agent from taking the termination action until n steps have elapsed.")
 
+    parser.add_argument("--agent-weights-path", type=str, default=None,
+                        help="Whether or not to pretrain the value and policy networks") 
     parser.add_argument("--multitask-count", type=int, default=16,
                         help="the number of tasks to generate for multitask eval")
     parser.add_argument("--print-actions", type=bool, default=False,
@@ -233,9 +235,9 @@ class PPOAgent(nn.Module):
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
 
 
-def main():
+def run_ppo(**kwargs):
     torch.cuda.empty_cache()
-    args = parse_args()
+    args = kwargs # parse_args()
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     writer = SummaryWriter(f"ppo_logs/{run_name}")
     writer.add_text(
@@ -250,8 +252,14 @@ def main():
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+
     print("lang", args.lang, "device:", device, "use_shrink", args.use_shrink_action)
     lang = get_lang_from_str(args.lang)
+
+    weights_output_path = "ppo_agent_weights"
+    if not os.path.exists(weights_output_path):
+        os.makedirs(weights_output_path)
+
 
     # env setup
     if args.num_envs == 1:
@@ -265,8 +273,6 @@ def main():
             copy=False
         )
 
-    assert isinstance(envs.single_action_space,
-                      gym.spaces.Discrete), "only discrete action space is supported"
     action_names = [r[0] for r in lang.all_rules()] + ["end"]
 
     if args.use_shrink_action:
@@ -275,6 +281,10 @@ def main():
     agent = PPOAgent(
         envs, weights_path=args.pretrained_weights_path, use_dropout=False, use_edge_attr=args.use_edge_attr, use_shrink_action=args.use_shrink_action, device=device).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+
+    if args.agent_weights_path is not None:
+        print("Loading learned weights from RL agent")
+        agent.load_state_dict(torch.load(args.agent_weights_path))
 
     # ALGO Logic: Storage setup
     obs = np.empty(args.num_steps, dtype=object)
@@ -504,6 +514,10 @@ def main():
     envs.close()
     writer.close()
 
+    # Save weights of agent now that it's been trained
+    torch.save(agent.state_dict(), weights_output_path)
+
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    run_ppo(**vars(args))

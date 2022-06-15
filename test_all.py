@@ -147,12 +147,7 @@ def run_exps(lang_name: str, num_expr=10, node_lim=10_000, out_path=default_out_
 
 if __name__ == "__main__":
     run_exps("PROP", num_expr=10, node_lim=10_000, seed=2)
-    
-    
 
-# dataframe would have a column called 'input_expr' which is the string of the input expression so that we can group by task.
-# then within that, each row has an 'index' so that ordering is tracked
-# 
 
 # 2. For each expression, train the PPO RL agent on the task.
 # Need to somehow switch to 'eval' mode on the agent and see what actions it takes, run that
