@@ -5,7 +5,6 @@ from rejoice import EGraph
 
 from LambdaLang import LambdaLang
 
-
 def egg_like(self, max_steps=500):
     egraph = self.new_egraph()
     steps = []
@@ -25,12 +24,12 @@ def egg_like(self, max_steps=500):
     return steps
 
 def lambda_saturate():
-    node_limit = 1000
+    node_limit = 10000
     lang = LambdaLang()
     ops = lang.all_operators_obj()
     f, g, h = ops.f, ops.g, ops.h
-    expr = h(g(f("x"), "Z"))
-    # expr = add(add(add(add(add(add(add(add(add(h(g(f("x"), "Z")), h(g(f("x"), "Z"))), "a"), "b"), "c"), "d"), "e"), "f"), "g"), "h")
+    Z = "Z"
+    expr = h(g(Z, Z))
     egraph = EGraph()
     egraph.add(expr)
     stop_reason, num_applications, num_enodes, num_eclasses = egraph.run(lang.rewrite_rules(), iter_limit=1000, node_limit=node_limit)
@@ -38,11 +37,12 @@ def lambda_saturate():
     print(expr, best_expr, best_cost, stop_reason, "enodes", num_enodes, "num_eclasses", num_eclasses)
 
 
-    node_limit = 1000
+    node_limit = 10000
     egraph = EGraph()
     egraph.add(expr)
-    a1, a2, a3, a4, *rest = lang.rewrite_rules()
-    actions = [a1]*100 + [a1, a2, a3, a4] + [a2, a3, a4]*100
+    a1, a2, a3 = lang.rewrite_rules()
+    actions = [a1]*3 + [a2, a3]*10 + [a1]
+
     for a in actions:
         stop_reason, num_applications, num_enodes, num_eclasses = egraph.run([a], iter_limit=1, node_limit=node_limit)
 

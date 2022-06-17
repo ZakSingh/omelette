@@ -24,6 +24,7 @@ class EGraphEnv(gym.Env):
         self.orig_expr = expr
         self.rewrite_rules = lang.rewrite_rules()
         self.use_shrink_action = use_shrink_action
+        self.global_step = 0
 
         num_actions = lang.num_rules + 1
         if use_shrink_action:
@@ -41,9 +42,13 @@ class EGraphEnv(gym.Env):
 
         self.acc_rewrites = 0
 
+    def set_global_step(self, global_step: int):
+        self.global_step = global_step
+
     def step(self, action: any) -> Tuple[any, float, bool, dict]:
         self.step_count += 1
         info = {"actual_cost": self.prev_cost, "acc_rewrites": self.acc_rewrites}
+        old_size = self.egraph.total_size()
         is_stop_action = action == self.lang.num_rules
         if is_stop_action:
             # Agent has chosen to stop optimizing and terminate current episode
@@ -74,14 +79,17 @@ class EGraphEnv(gym.Env):
             # reward for rebase 
             new_size = self.egraph.total_size()
             if new_size == old_size:
-                # Didn't get any e-graph reduction from rebasing, no point to this
+                # Didn't get any e-graph reduction from rebasing, no point to this (at all)
                 reward = -0.5
             else:
                 # reward is always negative (we don't want to encourage this)
                 # but bigger reduction to size == less negative reward
                 # keep in mind that magnitudes of this MUST be smaller than pos reward from cost reduction
                 # i.e. if a cost reduction can be achieved after a rebase, we want to encourage taking the rebase
-                reward = -(new_size / old_size) / 10
+                nodes_removed = old_size - new_size
+                assert nodes_removed >= 0  # sanity check
+                reward = -0.01
+                # reward = -float(nodes_removed / self.node_limit)
             # print("rebase old size:", old_size, "new size:", new_size, "reward", reward)
             is_done = False
             info["actual_cost"] = self.prev_cost
@@ -89,7 +97,7 @@ class EGraphEnv(gym.Env):
 
         # Normal rewrite action choice path
         rewrite_to_apply = [self.rewrite_rules[action]]
-        stop_reason, num_applications, num_enodes, num_eclasses = self.egraph.run(
+        stop_reason, num_applications, *rest = self.egraph.run(
             rewrite_to_apply, iter_limit=1, node_limit=self.node_limit)
         self.acc_rewrites += num_applications
         info["acc_rewrites"] = self.acc_rewrites
@@ -105,12 +113,16 @@ class EGraphEnv(gym.Env):
             best_cost = float(best_cost)
             info["actual_cost"] = best_cost
             if best_cost == self.prev_cost:
-                # expanded egraph, but didn't get us a better extraction cost
-                reward = -((1 / self.max_cost) / 10)
-                # reward = -0.001 # -0.05
+                # (maybe) expanded egraph, but didn't get us a better extraction cost
+                new_size = self.egraph.total_size()
+                nodes_added = (new_size - old_size)
+                assert nodes_added >= 0  # sanity check
+
+                # more nodes added = more punishment!
+                reward = -0.1 - float(nodes_added / self.node_limit)
             else:
                 # give reward based upon improvement to extraction cost
-                reward = (self.prev_cost - best_cost) / self.max_cost
+                reward = 10 * (self.prev_cost - best_cost) / self.max_cost
                 self.prev_cost = best_cost
 
         is_done = is_terminal(stop_reason)
@@ -131,6 +143,7 @@ class EGraphEnv(gym.Env):
             return_info: bool = False,
             options: Optional[dict] = None,
     ) -> Union[any, "tuple[any, dict]"]:
+        super().reset(seed=seed)
         self.step_count = 0
         self.egraph = EGraph()
         self.expr = self.orig_expr
@@ -150,7 +163,7 @@ class EGraphEnv(gym.Env):
             return new_obs
 
     def _get_obs(self):
-        return self.lang.encode_egraph(self.egraph, use_shrink_action=self.use_shrink_action, step=self.step_count)
+        return self.lang.encode_egraph(self.egraph, use_shrink_action=self.use_shrink_action, step=self.global_step)
 
     def close(self):
         pass

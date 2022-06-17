@@ -3,6 +3,7 @@ channels:
   - pyg
   - pytorch
   - nvidia
+  - conda-forge
 dependencies:
   - python=3.9
   - numpy

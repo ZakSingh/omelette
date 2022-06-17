@@ -15,13 +15,14 @@ class LambdaLang(Language):
             ("f", "x"),
             ("g", "x", "y"),
             ("h", "x"),
-            ("add", "x", "y")
+            # ("add", "x", "y")
         ]))
 
     @functools.cache
     def all_rules(self) -> "list[list]":
         x, y = vars("x y") 
         Z = "Z"
+        A = "A"
         op = self.all_operators_obj()
         f, g, h = op.f, op.g, op.h
 
@@ -33,14 +34,14 @@ class LambdaLang(Language):
         e = rec(x)
 
         # to reduce recursion depth needed
-        terms = ["a"*i for i in range(100)]
-        rules = [[t + "r", h(g(x, Z)), h(g(f(x), t))] for t in terms]
+        # terms = ["a"*i for i in range(100)]
+        # rules = [[t + "r", h(g(x, Z)), h(g(f(x), t))] for t in terms]
 
         return [
-            ["h",  h(g(x, Z)),  h(g(f(x), Z))],
-            ["g1", g(f(x), y),  g(x, f(y))],
-            ["g2", g(Z, y),     g(Z, Z)],
-            ["g3", e, x],  # resetting back to initial state
+            ["inc",  h(g(x, Z)),  h(g(f(x), Z))],
+            ["dec", g(f(x), y),  g(x, f(y))],
+            ["clear", g(Z, y),     Z],
+            # ["g3", e, x],  # resetting back to initial state
 
             # *rules
 

@@ -31,5 +31,9 @@ class GraphSpace(Space):
             "edge_index": Box(low=0, high=(num_nodes - 1), shape=(2, num_edges), dtype=np.int32)
         })
 
+    def contains(self, x) -> bool:
+        return True
+        # return super().contains(x)
+
     def __eq__(self, other):
         return (self.dtype == other.dtype) and (self.num_node_features == other.num_node_features)

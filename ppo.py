@@ -150,7 +150,7 @@ def make_env(env_id, seed, idx: int, input_expr, run_name: str, max_episode_step
         else:
             expr = lang.eval_expr(input_expr)
 
-        env = gym.make(env_id, lang=lang, expr=expr, use_shrink_action=use_shrink_action, node_limit=node_limit)
+        env = gym.make(env_id, disable_env_checker=True, lang=lang, expr=expr, use_shrink_action=use_shrink_action, node_limit=node_limit)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.seed(seed)
@@ -212,7 +212,7 @@ class PPOAgent(nn.Module):
                                 hidden_size=128,
                                 dropout=(0.3 if use_dropout else 0.0),
                                 use_edge_attr=use_edge_attr,
-                                out_std=0.01)  # make probability of each action similar to start with
+                                out_std=0.001)  # make probability of each action similar to start with
 
         if weights_path is not None:
             self.actor.load_state_dict(torch.load(weights_path))
@@ -258,6 +258,25 @@ def run_ppo(**kwargs):
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % (
             "\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+    )
+
+    writer.add_text(
+        "expression",
+        str(args.expr_str)
+    )
+
+    writer.add_text(
+        "costs/max",
+        str(args.max_cost)
+    )
+    writer.add_text(
+        "costs/egg",
+        str(args.egg_cost)
+    )
+
+    writer.add_text(
+        "egg_expr",
+        str(args.egg_expr)
     )
 
     # Seed random number generators for reproducible results
@@ -318,6 +337,7 @@ def run_ppo(**kwargs):
     next_obs = pyg.data.Batch.from_data_list(envs.reset()).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     num_updates = args.total_timesteps // args.batch_size
+
     for update in range(1, num_updates + 1):
         # Annealing the learning rate if instructed to do so.
         if args.anneal_lr:
@@ -328,6 +348,10 @@ def run_ppo(**kwargs):
         # Policy rollout across envs
         for step in range(0, args.num_steps):
             global_step += 1 * args.num_envs
+
+            if update == 1:
+                envs.call("set_global_step", step)
+            # nvs.set_attr("global_step", global_step)
             # add the batch of 4 env observations to the obs list at index step
             obs[step] = next_obs
             dones[step] = next_done
@@ -355,44 +379,62 @@ def run_ppo(**kwargs):
             # convert next obs to a pytorch geometric batch
             next_obs = pyg.data.Batch.from_data_list(next_obs).to(device)
 
-            for env_ind, item in enumerate(info):
-                if "actions_available" in item.keys():
-                    writer.add_scalar("charts/actions_available",
-                                      item["actions_available"], global_step)
-                if "episode" in item.keys():
-                    writer.add_scalar("charts/episodic_return",
-                                      item["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length",
-                                      item["episode"]["l"], global_step)
-                    writer.add_scalar("charts/episodic_cost",
-                                      item["actual_cost"], global_step)
+
+            if "episode" in info.keys():
+                for env_ind, env_ep_info in enumerate(info["episode"]):
+                    if env_ep_info is not None:
+                        writer.add_scalar("charts/episodic_return",
+                                            env_ep_info["r"], global_step)
+                        writer.add_scalar("charts/episodic_length",
+                                            env_ep_info["l"], global_step)
+                        writer.add_scalar("charts/episodic_cost",
+                                            info["actual_cost"][env_ind], global_step) 
+
+                        print(f"global_step={global_step:7}, episode_length={env_ep_info['l']:3}, episodic_return={env_ep_info['r']:5.2f}, episodic_cost={info['actual_cost'][env_ind]:5.2f}")
+
+            # for key, values in info.items():
+            #     for value in values:
+            #         writer.add_scalar(f"charts/{key}", value, global_step)
+
+            # for env_ind, item in enumerate(info):
+            #     if "actions_available" in item.keys():
+            #         writer.add_scalar("charts/actions_available",
+            #                           item["actions_available"], global_step)
+            #     if "episode" in item.keys():
+            #         writer.add_scalar("charts/episodic_return",
+            #                           item["episode"]["r"], global_step)
+            #         writer.add_scalar("charts/episodic_length",
+            #                           item["episode"]["l"], global_step)
+            #         writer.add_scalar("charts/episodic_cost",
+            #                           item["actual_cost"], global_step)
                     
-                    acc_rw = item.get("acc_rewrites")
-                    if acc_rw is not None:
-                        writer.add_scalar("charts/acc_rewrites",
-                                        acc_rw, global_step)
+            #         acc_rw = item.get("acc_rewrites")
+            #         if acc_rw is not None:
+            #             writer.add_scalar("charts/acc_rewrites",
+            #                             acc_rw, global_step)
 
-                    print(
-                        f"global_step={global_step:7}, episode_length={item['episode']['l']:3}, episodic_return={item['episode']['r']:5.2f}, episodic_cost={item['actual_cost']:5.2f}, acc_rw={acc_rw}")
+            #         print(
+            #             f"global_step={global_step:7}, episode_length={item['episode']['l']:3}, episodic_return={item['episode']['r']:5.2f}, episodic_cost={item['actual_cost']:5.2f}, acc_rw={acc_rw}")
 
-                    if args.print_actions:
-                        # TODO: clean this up
-                        start = (step + 1) - item["episode"]["l"]
-                        if start < 0:
-                            # start of episode is at end of buffer
-                            start_before = args.num_steps + start
-                            ep_actions = [action_names[int(i)] for i in torch.cat(
-                                [actions[start_before:][:, env_ind], actions[0:step + 1][:, env_ind]])]
-                            ep_rewards = [x.item() for x in list(
-                                torch.cat([rewards[start_before:][:, env_ind], rewards[0:step + 1][:, env_ind]]))]
-                        else:
-                            ep_actions = [
-                                action_names[int(i)] for i in actions[start:step + 1][:, env_ind]]
-                            ep_rewards = [x.item() for x in list(
-                                rewards[start:step + 1][:, env_ind])]
-                        ep_a_r = list(zip(ep_actions, ep_rewards))
-                        print(ep_a_r)
-                    break
+            #         if args.print_actions:
+            #             # TODO: clean this up
+            #             start = (step + 1) - item["episode"]["l"]
+            #             if start < 0:
+            #                 # start of episode is at end of buffer
+            #                 start_before = args.num_steps + start
+            #                 ep_actions = [action_names[int(i)] for i in torch.cat(
+            #                     [actions[start_before:][:, env_ind], actions[0:step + 1][:, env_ind]])]
+            #                 ep_rewards = [x.item() for x in list(
+            #                     torch.cat([rewards[start_before:][:, env_ind], rewards[0:step + 1][:, env_ind]]))]
+            #             else:
+            #                 ep_actions = [
+            #                     action_names[int(i)] for i in actions[start:step + 1][:, env_ind]]
+            #                 ep_rewards = [round(x.item(), 10) for x in list(
+            #                     rewards[start:step + 1][:, env_ind])]
+            #             ep_a_r = list(zip(ep_actions, ep_rewards))
+            #             print(ep_a_r)
+            #             print()
+            #         break
 
         # Remember that actions is (n_steps, n_envs, n_actions)
         # bootstrap value if not done
