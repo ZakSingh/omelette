@@ -38,7 +38,6 @@ class EGraphEnv(gym.Env):
         self.reward_range = (-1, 1)
         self.node_limit = node_limit
         self.egraph, self.max_cost, self.prev_cost, self.best_seen_cost = None, None, None, None
-        self.is_first_step = True
 
         self.acc_rewrites = 0
 
@@ -51,10 +50,12 @@ class EGraphEnv(gym.Env):
         old_size = self.egraph.total_size()
         is_stop_action = action == self.lang.num_rules
         if is_stop_action:
+            if self.step_count == 0:
+                print("STOOPED AT first step")
             # Agent has chosen to stop optimizing and terminate current episode
             # punish agent if it ends the episode without any improvement
             # reward = -1.0 if self.prev_cost == self.max_cost else 0.0
-            reward = -1.0 if self.is_first_step else 0.0
+            reward = -1.0 if self.step_count == 0 else 0.0
             # TODO: should the next obs be None or still the current state?
             # return self._get_obs(), reward, True, info
             return None, reward, True, info
@@ -152,7 +153,6 @@ class EGraphEnv(gym.Env):
         self.max_cost = float(self.egraph.extract(self.expr)[0])
         self.prev_cost = self.max_cost
         self.best_seen_cost = self.max_cost
-        self.is_first_step = True
         # reward is normalized to (0, max_cost)
         # print("reset get_obs")
         new_obs = self._get_obs()
@@ -163,7 +163,7 @@ class EGraphEnv(gym.Env):
             return new_obs
 
     def _get_obs(self):
-        return self.lang.encode_egraph(self.egraph, use_shrink_action=self.use_shrink_action, step=self.global_step)
+        return self.lang.encode_egraph(self.egraph, use_shrink_action=self.use_shrink_action, step=self.step_count)
 
     def close(self):
         pass

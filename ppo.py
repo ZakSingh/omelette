@@ -39,8 +39,7 @@ def parse_args():
     # omelette-specific configuration
     parser.add_argument("--mode", type=str, choices=["single_task_sat", "single_task_explodes", "bc", "multitask"], default="single_task_sat")
     parser.add_argument("--expr-str", type=str, default=None, help="Expression to run")
-    parser.add_argument("--termination-decay", type=bool, default=True,
-                        help="Prevent the agent from taking the termination action until n steps have elapsed.")
+    parser.add_argument('--expr-list', nargs='+', default=[], help="list of expressions to multitask learn")
 
     parser.add_argument("--agent-weights-path", type=str, default=None,
                         help="Whether or not to pretrain the value and policy networks") 
@@ -68,13 +67,13 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="egraph-v0",
                         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=2_000_000,  # 2_000_000,
+    parser.add_argument("--total-timesteps", type=int, default=1_000_000,
                         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
                         help="the learning rate of the optimizer")
-    parser.add_argument("--num-envs", type=int, default=16,  # 8,
+    parser.add_argument("--num-envs", type=int, default=32,
                         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=128,  # 256,
+    parser.add_argument("--num-steps", type=int, default=128, 
                         help="the number of steps to run in each environment per policy rollout")
 
     # Below - these shouldn't be changed much.
@@ -153,7 +152,7 @@ def make_env(env_id, seed, idx: int, input_expr, run_name: str, max_episode_step
         env = gym.make(env_id, disable_env_checker=True, lang=lang, expr=expr, use_shrink_action=use_shrink_action, node_limit=node_limit)
         env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.seed(seed)
+        env.reset(seed=seed)
         env.action_space.seed(seed)
         return env
 
@@ -202,14 +201,14 @@ class PPOAgent(nn.Module):
         self.critic = GATNetwork(num_node_features=n_node_features,
                                  n_actions=1,
                                  n_layers=3,
-                                 hidden_size=128,
+                                 hidden_size=64,
                                  dropout=(0.3 if use_dropout else 0.0),
                                  use_edge_attr=use_edge_attr,
                                  out_std=1.)
         self.actor = GATNetwork(num_node_features=n_node_features,
                                 n_actions=n_actions,
                                 n_layers=3,
-                                hidden_size=128,
+                                hidden_size=64,
                                 dropout=(0.3 if use_dropout else 0.0),
                                 use_edge_attr=use_edge_attr,
                                 out_std=0.001)  # make probability of each action similar to start with

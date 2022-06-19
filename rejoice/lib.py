@@ -118,27 +118,28 @@ class Language(Protocol):
             op_to_ind_table[op] = ind
         return op_to_ind_table
 
-    def gen_expr(self, root_op=None, p_leaf=0.85):
+    def gen_expr(self, root_op=None, p_leaf=0.6, depth=0):
         """Generate an arbitrary expression which abides by the language."""
+        depth_limit = 6
         ops = self.all_operators()
         root = np.random.choice(ops) if root_op is None else root_op
         children = []
         for i in range(len(root._fields)):
-            if np.random.uniform(0, 1) < p_leaf:
-                if np.random.uniform(0, 1) < 0.65:
+            if np.random.uniform(0, 1) < p_leaf or depth >= depth_limit:
+                if np.random.uniform(0, 1) < 0.5:
                     children.append(np.random.choice(self.get_terminals()))
                 else:
                     if "symbols" in self.get_supported_datatypes():
-                        symbols = list(string.ascii_lowercase)
+                        symbols = ["a", "b", "c", "d"]
+                        # symbols = list(string.ascii_lowercase)
                         children.append(np.random.choice(symbols))
                     if "integers" in self.get_supported_datatypes():
-                        symbols = list(string.ascii_lowercase)
-                        children.append(np.random.randint(0, 99)) 
+                        children.append(np.random.randint(0, 5)) 
             else:
                 chosen_op = np.random.choice(ops)
                 op_children = []
                 for j in range(len(chosen_op._fields)):
-                    op_children.append(self.gen_expr(chosen_op))
+                    op_children.append(self.gen_expr(chosen_op, depth=depth+1))
                 children.append(chosen_op(*op_children))
         return root(*children)
 
@@ -243,8 +244,8 @@ class Language(Protocol):
         action_mask = x[:, rule_start:].sum(dim=0).clamp(0, 1)
         if use_shrink_action:
             action_mask = torch.cat((action_mask, torch.ones(2)))
-            # if step < 100:
-            #     action_mask[-2] = 0
+            if step < 100:
+                 action_mask[-2] = 0
         else:
             action_mask = torch.cat((action_mask, torch.ones(1)))
             # if step < 100:

@@ -1,4 +1,5 @@
 import argparse
+import time
 import os
 from os import listdir
 import random
@@ -45,9 +46,10 @@ def step(action: int, expr_to_extract, lang: Language, egraph: EGraph, node_lim=
                 init_expr=str(expr_to_extract)
                 )
 
-def add_df_meta(df: pd.DataFrame, lang_name: str, solver_name: str):
+def add_df_meta(df: pd.DataFrame, lang_name: str, solver_name: str, training_time=0.0):
     df["lang"] = lang_name
     df["solver"] = solver_name
+    df["training_time"] = training_time
     # add the step index as a column
     df = df.reset_index().rename(columns={'index': 'step_ind'})
     return df
@@ -85,8 +87,7 @@ def solve_expr_egg(lang: Language, expr, node_lim=10_000):
     steps_df = add_df_meta(steps_df, lang.name, "egg")
     return steps_df
 
-
-def rollout(lang: Language, expr, device, agent, num_rollouts=100, max_ep_len=100):
+def rollout(lang: Language, expr, device, agent, training_time, num_rollouts=100, max_ep_len=100):
     """Rollout an agent's trained policy on a given expression."""
 
     def run_once(lang, expr, device, agent, max_ep_len=100):
@@ -95,7 +96,7 @@ def rollout(lang: Language, expr, device, agent, num_rollouts=100, max_ep_len=10
         agent.eval()
         count = 0
         while True:
-            obs = lang.encode_egraph(egraph, use_shrink_action=True).to(device)
+            obs = lang.encode_egraph(egraph, use_shrink_action=True, step=count).to(device)
             with torch.no_grad():
                 action, *rest = agent.get_action_and_value(obs, invalid_action_mask=obs.action_mask)
 
@@ -107,6 +108,7 @@ def rollout(lang: Language, expr, device, agent, num_rollouts=100, max_ep_len=10
                 print("rebase action received", action, "at", count)
                 _, expr = egraph.extract(expr)
                 egraph = new_egraph(expr)
+                # TODO: Append "rebase" action to step list
             else:
                 s = step(action, expr, lang, egraph, node_lim)
                 steps.append(s)
@@ -144,35 +146,48 @@ def rollout(lang: Language, expr, device, agent, num_rollouts=100, max_ep_len=10
             best_rollout_cost = cost
             best_rollout_len = num_steps
 
-    best_rollout = add_df_meta(best_rollout, lang.name, "omelette")
+    best_rollout = add_df_meta(best_rollout, lang.name, "omelette", training_time=training_time)
     return best_rollout
 
 
-def solve_expr_omelette(lang: Language, expr, expr_ind: int, egg_cost: int, egg_expr: str, node_lim=10_000, num_rollouts=100, max_ep_len=10):
-    """Train the PPO agent with its default config on this expression in isolation."""
+def solve_expr_omelette(lang: Language, expr, expr_ind: int, egg_cost: int, egg_expr: str, node_lim=10_000, num_rollouts=100, max_ep_len=10, seed=1):
+    """Train the PPO agent with its default config on this single expression in isolation."""
     print("Training agent...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    first_stamp = int(round(time.time() * 1000))
     agent = run_ppo(lang=lang.name,
+                    seed=seed,
                     expr_str=str(expr),
                     exp_name=f"{lang.name}_{expr_ind}", 
                     node_limit=node_lim,
                     use_shrink_action=True,
                     learning_rate=5e-4,
                     max_episode_steps=max_ep_len,
-                    total_timesteps=75_000,
+                    total_timesteps=100_000,
                     egg_cost=egg_cost,
                     egg_expr=egg_expr,
                     max_cost=base_cost(expr),
                     print_actions=False)
-    
+    second_stamp = int(round(time.time() * 1000))
+    training_time = second_stamp - first_stamp
     print("Agent trained. Evaluating learned policy...")
-    df = rollout(lang, expr, device, agent, num_rollouts, max_ep_len)
+
+    df = rollout(lang=lang,
+                 expr=expr,
+                 device=device,
+                 agent=agent,
+                 training_time=training_time,
+                 num_rollouts=num_rollouts,
+                 max_ep_len=max_ep_len)
     return df
 
-def solve_expr(lang: Language, expr, expr_ind: int, node_lim=10_000, out_path=default_out_path):
+def solve_expr(lang: Language, expr, expr_ind: int, node_lim=10_000, seed=1, out_path=default_out_path):
     print("Solving expression", expr)
+
     egg_df = solve_expr_egg(lang, expr, node_lim)
     print("egg cost:", egg_df["cost"].iloc[-1])
+    egg_df.to_feather(f"{out_path}/{lang.name}_{expr_ind}_egg")
+
     om_df = solve_expr_omelette(lang=lang,
                                 expr=expr,
                                 expr_ind=expr_ind,
@@ -180,22 +195,25 @@ def solve_expr(lang: Language, expr, expr_ind: int, node_lim=10_000, out_path=de
                                 node_lim=node_lim,
                                 egg_cost=egg_df["cost"].iloc[-1],
                                 egg_expr=egg_df["best_expr"].iloc[-1])
+    om_df.to_feather(f"{out_path}/{lang.name}_{expr_ind}_om")
 
-    # expr_data.to_feather(f"{out_path}/{lang.name}_{expr_ind}")
 
-
-def om_multitask(lang: Language, exprs: list, envs_per_expr=8, node_lim=10_000, num_eval_rollouts=100, max_ep_len=100):
+def om_multitask(lang: Language, exprs: list, envs_per_expr=8, node_lim=10_000, num_eval_rollouts=100, max_ep_len=100, seed=1):
     """
     Run omelette in mult-task configuration. This involves supplying the agent with 8 of each expr.
     """
+    expr_strs = [str(expr) for _, expr in exprs]
+    exp_names = [f"{lang.name}_{expr_ind}" for expr_ind, _ in exprs]
+    exps = list(zip(exp_names, expr_strs))
+
     agent = run_ppo(lang=lang.name,
-                    expr_str=str(expr),
-                    exp_name=f"{lang.name}_{expr_ind}", 
+                    expr_list=exps,
                     node_limit=node_lim,
+                    seed=seed,
                     use_shrink_action=True,
                     learning_rate=5e-4,
                     max_episode_steps=max_ep_len,
-                    total_timesteps=75_000,
+                    total_timesteps=100_000,
                     print_actions=False)
     
 def get_lang(name: str) -> Language:
@@ -219,7 +237,7 @@ def run_exps(lang_name: str, num_expr=10, node_lim=10_000, out_path=default_out_
 
     lang = get_lang(lang_name)()
     exprs = [(i, lang.gen_expr(p_leaf=0.0)) for i in range(num_expr)]
-    exprs = [exprs[3]]
+    # exprs = [exprs[2]]
     # exprs = [(0, lang.get_single_task_exprs().saturatable)]
 
     # filter expressions we already have in output dir
@@ -228,22 +246,14 @@ def run_exps(lang_name: str, num_expr=10, node_lim=10_000, out_path=default_out_
     # exprs = [i for j, i in enumerate(exprs) if j not in already_done_inds]
 
     for expr_ind, expr in exprs:
-        solve_expr(lang=lang, expr_ind=expr_ind, expr=expr, node_lim=node_lim, out_path=out_path)
-        # try:
-        #     solve_expr(lang=lang, expr_ind=expr_ind, expr=expr, node_lim=node_lim, out_path=out_path)
-        # except:
-        #     print("Failed to solve expr_ind", expr_ind)
+        try:
+            solve_expr(lang=lang, expr_ind=expr_ind, expr=expr, node_lim=node_lim, out_path=out_path, seed=seed)
+        except:
+            print("Failed to solve expr_ind", expr_ind)
 
     print("Completed running all experiments in generated dataset.")
 
 
 if __name__ == "__main__":
-    node_lim = 1000
+    node_lim = 500
     run_exps("PROP", num_expr=100, node_lim=node_lim, seed=1)
-    # run_exps("MATH", num_expr=100, node_lim=10_000, seed=1)
-
-
-# 2. For each expression, train the PPO RL agent on the task.
-# Need to somehow switch to 'eval' mode on the agent and see what actions it takes, run that
-# policy 5 times, tracking the action and number of applications at each step, then taking the one that gives
-# the lowest possible cost in the fewest actions.
