@@ -60,6 +60,9 @@ def solve_expr_egg(lang: Language, expr, node_lim=10_000):
     This will keep running until saturation, a node limit, or time limit is reached.
     """
     egraph = new_egraph(expr)
+    best_cost, _ = egraph.extract(expr)
+    print("base cost:", best_cost)
+
     steps = []
 
     i = 0
@@ -237,6 +240,7 @@ def run_exps(lang_name: str, num_expr=10, node_lim=10_000, out_path=default_out_
 
     lang = get_lang(lang_name)()
     exprs = [(i, lang.gen_expr(p_leaf=0.0)) for i in range(num_expr)]
+    exprs = exprs[3:]
     # exprs = [exprs[2]]
     # exprs = [(0, lang.get_single_task_exprs().saturatable)]
 
@@ -246,14 +250,17 @@ def run_exps(lang_name: str, num_expr=10, node_lim=10_000, out_path=default_out_
     # exprs = [i for j, i in enumerate(exprs) if j not in already_done_inds]
 
     for expr_ind, expr in exprs:
-        try:
-            solve_expr(lang=lang, expr_ind=expr_ind, expr=expr, node_lim=node_lim, out_path=out_path, seed=seed)
-        except:
-            print("Failed to solve expr_ind", expr_ind)
+        solve_expr(lang=lang, expr_ind=expr_ind, expr=expr, node_lim=node_lim, out_path=out_path, seed=seed)
+
+        # try:
+        #     solve_expr(lang=lang, expr_ind=expr_ind, expr=expr, node_lim=node_lim, out_path=out_path, seed=seed)
+        # except:
+        #     print("Failed to solve expr_ind", expr_ind)
 
     print("Completed running all experiments in generated dataset.")
 
 
 if __name__ == "__main__":
     node_lim = 500
-    run_exps("PROP", num_expr=100, node_lim=node_lim, seed=1)
+    # run_exps("PROP", num_expr=100, node_lim=node_lim, seed=1)
+    run_exps("MATH", num_expr=25, node_lim=node_lim, seed=1)

@@ -1,6 +1,7 @@
 import functools
 from rejoice.lib import Language, TestExprs
 from rejoice import vars
+import numpy as np
 
 
 class MathLang(Language):
@@ -19,7 +20,7 @@ class MathLang(Language):
             ("Mul", "x", "y"),
             ("Div", "x", "y"),
             ("Pow", "x", "y"),
-            ("Ln", "x"),
+            # ("Ln", "x"),
             ("Sqrt", "x"),
 
             ("Sin", "x"),
@@ -100,7 +101,7 @@ class MathLang(Language):
     def get_single_task_exprs(self):
         ops = self.all_operators_obj()
 
-        Add, Integral, Mul, Pow, Diff, Ln, Div, Cos, Sub, Sqrt = ops.add, ops.integral, ops.mul, ops.pow, ops.diff, ops.ln, ops.div, ops.cos, ops.sub, ops.sqrt
+        Add, Integral, Mul, Pow, Diff, Div, Cos, Sub, Sqrt = ops.add, ops.integral, ops.mul, ops.pow, ops.diff, ops.div, ops.cos, ops.sub, ops.sqrt
 
         s = ops.sub(ops.add(16, 2), 0)
 
@@ -115,3 +116,28 @@ class MathLang(Language):
     def get_multi_task_exprs(self, count=16):
         """Get a list of exprs for use in multi-task RL training"""
         return [self.gen_expr(p_leaf=0.0) for i in range(count)]
+
+    def gen_expr(self, root_op=None, p_leaf=0.7, depth=0):
+        """Generate an arbitrary expression which abides by the language."""
+        depth_limit = 5
+        ops = self.all_operators()
+        root = np.random.choice(ops) if root_op is None else root_op
+        children = []
+        for i in range(len(root._fields)):
+            if np.random.uniform(0, 1) < p_leaf or depth >= depth_limit:
+                if np.random.uniform(0, 1) < 0.7:
+                    children.append(np.random.choice(self.get_terminals()))
+                else:
+                    if "symbols" in self.get_supported_datatypes():
+                        symbols = ["a", "b", "c", "d"]
+                        # symbols = list(string.ascii_lowercase)
+                        children.append(np.random.choice(symbols))
+                    if "integers" in self.get_supported_datatypes():
+                        children.append(np.random.randint(0, 3)) 
+            else:
+                chosen_op = np.random.choice(ops)
+                op_children = []
+                for j in range(len(chosen_op._fields)):
+                    op_children.append(self.gen_expr(chosen_op, depth=depth+1))
+                children.append(chosen_op(*op_children))
+        return root(*children)

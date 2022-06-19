@@ -143,6 +143,10 @@ class Language(Protocol):
                 children.append(chosen_op(*op_children))
         return root(*children)
 
+
+    def operator_names(self):
+        return [op.__name__.lower() for op in self.all_operators()]
+    
     @functools.cached_property
     def num_rules(self):
         return len(self.all_rules())
@@ -211,7 +215,7 @@ class Language(Protocol):
 
             for node in nodes:
                 # we only want to encode if they're terminals... everything else will cause learning confusion.
-                if isinstance(node, int) or isinstance(node, float) or isinstance(node, bool) or isinstance(node, str) or isinstance(node, np.bool_):
+                if isinstance(node, int) or isinstance(node, float) or isinstance(node, bool) or isinstance(node, str) or isinstance(node, np.bool_) or isinstance(node, np.int64):
                     try:
                         term_ind = self.get_terminals().index(node)
                         x[curr, 3] = 1
