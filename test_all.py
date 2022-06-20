@@ -240,7 +240,7 @@ def run_exps(lang_name: str, num_expr=10, node_lim=10_000, out_path=default_out_
 
     lang = get_lang(lang_name)()
     exprs = [(i, lang.gen_expr(p_leaf=0.0)) for i in range(num_expr)]
-    exprs = exprs[3:]
+    exprs = exprs[21:]
     # exprs = [exprs[2]]
     # exprs = [(0, lang.get_single_task_exprs().saturatable)]
 

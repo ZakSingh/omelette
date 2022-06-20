@@ -117,7 +117,7 @@ class MathLang(Language):
         """Get a list of exprs for use in multi-task RL training"""
         return [self.gen_expr(p_leaf=0.0) for i in range(count)]
 
-    def gen_expr(self, root_op=None, p_leaf=0.7, depth=0):
+    def gen_expr(self, root_op=None, p_leaf=0.6, depth=0):
         """Generate an arbitrary expression which abides by the language."""
         depth_limit = 5
         ops = self.all_operators()
@@ -125,7 +125,7 @@ class MathLang(Language):
         children = []
         for i in range(len(root._fields)):
             if np.random.uniform(0, 1) < p_leaf or depth >= depth_limit:
-                if np.random.uniform(0, 1) < 0.7:
+                if np.random.uniform(0, 1) < 0.6:
                     children.append(np.random.choice(self.get_terminals()))
                 else:
                     if "symbols" in self.get_supported_datatypes():
