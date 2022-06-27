@@ -236,7 +236,7 @@ def rollout(lang: Language, expr, device, agent, training_time, num_rollouts=100
             best_rollout_cost = cost
             best_rollout_len = num_steps
 
-    solver_name = "omelette_norb" if no_rebase else "omelette"
+    solver_name = "norebase" if no_rebase else "omelette"
 
     best_rollout = add_df_meta(best_rollout, lang.name, solver_name, training_time=training_time)
     return best_rollout
@@ -364,7 +364,7 @@ def rerun_exps_om(lang_name: str, node_lim=10_000, max_ep_len=100, n_rollouts=10
         first = df.iloc[0]
         last = df.iloc[-1]
         expr = lang.eval_expr(first["init_expr"])
-
+        print("no rebase", no_rebase)
         print("rerunning OM for expr", expr_ind, "om cost", last["cost"], "om steps", len(df))
 
         df = rollout(lang=lang,
@@ -377,7 +377,8 @@ def rerun_exps_om(lang_name: str, node_lim=10_000, max_ep_len=100, n_rollouts=10
                     node_lim=node_lim,
                     no_rebase=no_rebase)
 
-        df.to_feather(f"{out_path}/{lang.name}_{expr_ind}_omfixed")
+        name = "norebase" if no_rebase else "omfixed"
+        df.to_feather(f"{out_path}/{lang.name}_{expr_ind}_{name}")
         
 
 
@@ -422,7 +423,7 @@ def run_exps_rand(lang_name: str, node_lim=10_000, out_path=default_out_path, se
 
 if __name__ == "__main__":
     node_lim = 500
-    rerun_exps_om("PROP", node_lim=node_lim, seed=1)
+    rerun_exps_om("MATH", node_lim=node_lim, seed=1, no_rebase=True)
     # run_exps_rand("PROP", node_lim=node_lim, seed=1)
     # run_exps("PROP", num_expr=100, node_lim=node_lim, seed=1)
     # run_exps("MATH", num_expr=25, node_lim=node_lim, seed=1)
